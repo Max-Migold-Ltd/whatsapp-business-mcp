@@ -1,0 +1,69 @@
+# Environment files with secrets
+.env
+.env.local
+.env.production
+.env.development
+
+# Server launcher (may contain local paths)
+run_server.sh
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Railway
+.railway/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Credentials and sensitive data
+credentials.json
+secrets.json
+config.json
+tokens.txt
+
+# Any file with 'secret' or 'token' in the name
+*secret*
+*token*
+*credential*

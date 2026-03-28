@@ -1,0 +1,10 @@
+[project]
+name = "whatsapp-cloud-api-mcp-server"
+version = "0.1.0"
+description = "Comprehensive MCP server for WhatsApp Cloud API with full messaging, templates, business management, and media handling capabilities"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+authors = [
+    {name = "Udayan Das Chowdhury", email = "udayan@netcorecloud.com"}
+]
