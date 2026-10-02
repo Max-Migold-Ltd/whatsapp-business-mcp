@@ -9,6 +9,7 @@ A security-hardened [Model Context Protocol (MCP)](https://modelcontextprotocol.
 - **Official Meta API only** — all calls go to `graph.facebook.com`, no unofficial/third-party APIs
 - **Two transport modes** — stdio (for MCP clients like Claude Desktop) and HTTP (for REST API access)
 - **Production-ready** — CORS controls, security headers, configurable via environment variables
+- **Customer support bot** — intake questionnaire with handoff to a human agent in the WhatsApp Business app, conversations and tickets logged to SharePoint Excel. See [SUPPORT_BOT.md](SUPPORT_BOT.md); deployment: [DEPLOY.md](DEPLOY.md)
 
 ## Tools Overview
 

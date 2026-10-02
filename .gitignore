@@ -67,3 +67,9 @@ tokens.txt
 *secret*
 *token*
 *credential*
+# Local virtualenv and support bot database
+.venv/
+data/
+
+# Generated Excel log (upload to SharePoint, not git)
+*.xlsx
