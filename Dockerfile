@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Run as a non-root user; /data holds the database - mount a persistent volume there
-RUN useradd --create-home --uid 10001 app && mkdir -p /data && chown app:app /data
+RUN useradd --create-home --uid 10001 app && mkdir -p /data /app/data && chown app:app /data /app/data
 USER app
 VOLUME ["/data"]
 
