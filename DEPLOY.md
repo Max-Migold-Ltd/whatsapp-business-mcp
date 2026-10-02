@@ -25,7 +25,7 @@ sudo apt install -y git python3-venv python3-pip caddy ufw
 
 ```bash
 sudo useradd --system --create-home --shell /usr/sbin/nologin whatsapp
-sudo git clone -b support-bot https://github.com/Salako07/whatsapp-business-mcp.git /opt/whatsapp-business-mcp
+sudo git clone -b support-bot https://github.com/Max-Migold-Ltd/whatsapp-business-mcp.git /opt/whatsapp-business-mcp
 cd /opt/whatsapp-business-mcp
 sudo python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
