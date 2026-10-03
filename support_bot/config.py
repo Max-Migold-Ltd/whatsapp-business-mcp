@@ -17,6 +17,7 @@ class SupportSettings:
 
     # Bot behaviour
     db_path: str
+    database_url: Optional[str]
     flow_file: str
     agent_idle_hours: float
     greeting_gap_hours: float
@@ -51,6 +52,7 @@ class SupportSettings:
             verify_token=os.getenv("WEBHOOK_VERIFY_TOKEN"),
             app_secret=os.getenv("META_APP_SECRET"),
             db_path=os.getenv("SUPPORT_DB_PATH", os.path.join("data", "support.db")),
+            database_url=os.getenv("DATABASE_URL") or None,
             flow_file=os.getenv("SUPPORT_FLOW_FILE", os.path.join(_PACKAGE_DIR, "flow.json")),
             agent_idle_hours=float(os.getenv("AGENT_IDLE_HOURS", "12")),
             greeting_gap_hours=float(os.getenv("GREETING_GAP_HOURS", "24")),

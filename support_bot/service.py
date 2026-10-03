@@ -19,7 +19,8 @@ logger = logging.getLogger("whatsapp-support")
 class SupportService:
     def __init__(self, settings: SupportSettings, messaging: MessagingHandler):
         self.settings = settings
-        self.store = SupportStore(settings.db_path)
+        # PostgreSQL in production (DATABASE_URL), SQLite file otherwise
+        self.store = SupportStore(settings.database_url or settings.db_path)
         self.bot = SupportBot(settings, self.store, messaging)
         self.excel = (
             SharePointExcelLogger(settings, self.store, self.bot.fields) if settings.sharepoint_configured else None
@@ -30,6 +31,10 @@ class SupportService:
         self._sync_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
+        if self.store.backend == "postgres":
+            logger.info("Storing conversations and tickets in PostgreSQL (DATABASE_URL)")
+        else:
+            logger.info("Storing conversations and tickets in SQLite file %s", self.settings.db_path)
         if not self.settings.verify_token:
             logger.warning("WEBHOOK_VERIFY_TOKEN not set - Meta cannot verify the /webhook endpoint")
         if not self.settings.app_secret:
@@ -42,7 +47,7 @@ class SupportService:
                 " | ".join(ticket_columns(self.bot.fields)),
             )
         else:
-            logger.warning("SharePoint not configured - messages are only stored locally in %s", self.settings.db_path)
+            logger.warning("SharePoint not configured - messages are only kept in the database")
 
     async def stop(self) -> None:
         self._stop.set()

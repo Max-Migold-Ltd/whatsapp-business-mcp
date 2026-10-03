@@ -361,6 +361,7 @@ async def health_check():
             "webhooks": webhook_handler is not None,
             "business_account": business_account_handler is not None,
             "support_bot": getattr(app.state, "support", None) is not None,
+            "support_storage": app.state.support.store.backend if getattr(app.state, "support", None) else None,
         },
         "features": {
             "total_tools": "50+ WhatsApp Cloud API tools",

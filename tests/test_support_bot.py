@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import time
 
 import httpx
@@ -41,8 +42,18 @@ def env(monkeypatch, tmp_path):
     # main_http loads the real .env on import - keep its optional settings out of the tests
     for key in ("SHAREPOINT_TENANT_ID", "SHAREPOINT_CLIENT_ID", "SHAREPOINT_CLIENT_SECRET",
                 "SHAREPOINT_HOSTNAME", "SHAREPOINT_SITE_PATH", "SHAREPOINT_FILE_PATH", "SHAREPOINT_FILE_URL",
-                "SUPPORT_FLOW_FILE", "AGENT_WHATSAPP_NUMBER", "AGENT_ALERT_TEMPLATE"):
+                "SUPPORT_FLOW_FILE", "AGENT_WHATSAPP_NUMBER", "AGENT_ALERT_TEMPLATE", "DATABASE_URL"):
         monkeypatch.delenv(key, raising=False)
+
+    # Set TEST_DATABASE_URL to run the whole suite against PostgreSQL (tables are reset per test)
+    test_db = os.environ.get("TEST_DATABASE_URL")
+    if test_db:
+        import psycopg
+        from support_bot.store import TABLES
+        with psycopg.connect(test_db, autocommit=True) as conn:
+            for table in TABLES:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+        monkeypatch.setenv("DATABASE_URL", test_db)
     return values
 
 
@@ -536,7 +547,7 @@ def test_forwards_queue_while_agent_window_closed(relay, sent):
     sent.agent_window_closed = True
     complete_ticket(relay, sent)
     says(relay, "wamid.f1", "Hello?")
-    queued = store(relay)._conn.execute("SELECT COUNT(*) FROM relay_queue").fetchone()[0]
+    queued = store(relay).count_relay_queue()
     assert queued == 2  # the new ticket + the follow-up
     templates = [d for d in sent.to(AGENT) if d["type"] == "template"]
     assert len(templates) == 1  # alerted once, not per message
@@ -820,3 +831,33 @@ def test_feedback_shows_status_if_agent_sets_one(client, sent):
     client.app.state.support.bot.status_reader = excel_status
     says(client, "wamid.fs5", "MMF-00001")
     assert "Status: *Resolved*" in last_sent_text(sent)
+
+
+@pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="set TEST_DATABASE_URL to test PostgreSQL")
+def test_copy_sqlite_to_postgres(env, tmp_path):
+    import subprocess
+    import sys
+    from support_bot.store import SupportStore
+
+    sqlite_path = str(tmp_path / "old.db")
+    old = SupportStore(sqlite_path)
+    old.create_ticket(CUSTOMER, "Ada", {"Location": "Lagoon"}, "MMF", "Pending")
+    old.create_ticket(CUSTOMER, "Ada", {"Location": "La Tour"}, "MMF", None)
+    old.add_message(CUSTOMER, "in", "customer", "text", "Hello", wamid="w1")
+    old.add_relay_link("wamid.fwd", CUSTOMER, "MMF-00001", {"kind": "text"})
+    old.close()
+
+    url = os.environ["TEST_DATABASE_URL"]
+    result = subprocess.run(
+        [sys.executable, "scripts/copy_sqlite_to_postgres.py", sqlite_path],
+        env={**os.environ, "MIGRATE_TO_DATABASE_URL": url, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "MISMATCH" not in result.stdout
+
+    new = SupportStore(url)
+    assert new.get_ticket("MMF-00002")["answers"] == {"Location": "La Tour"}
+    assert new.get_relay_link("wamid.fwd")["phone"] == CUSTOMER
+    assert new.create_ticket(CUSTOMER, "Ada", {}, "MMF", "Pending")["ref"] == "MMF-00003"
+    new.close()
