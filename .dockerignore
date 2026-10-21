@@ -14,3 +14,8 @@ __pycache__/
 .pytest_cache/
 .git/
 .claude/
+
+# WhatsApp bridge
+wa_bridge/node_modules/
+wa_auth/
+wa_bridge/wa_auth/

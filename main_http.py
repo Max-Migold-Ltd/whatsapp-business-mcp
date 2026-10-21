@@ -58,6 +58,7 @@ except ImportError as e:
     register_comprehensive_tools_extended = None
 
 from support_bot import SupportService, SupportSettings, router as support_router
+from group_agent import GroupAgentService, GroupAgentSettings, router as group_agent_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -190,6 +191,8 @@ app.add_middleware(APIKeyAuthMiddleware)
 
 # WhatsApp webhook (/webhook) and support conversation endpoints (/api/v1/support/*)
 app.include_router(support_router)
+# WhatsApp group agent (/group-agent/events from wa_bridge, /api/v1/group-agent/*)
+app.include_router(group_agent_router)
 
 # Global handlers
 messaging_handler = None
@@ -299,6 +302,17 @@ async def startup_event():
                 logger.error(f"Support bot not initialized: {e}")
                 app.state.support = None
 
+        # WhatsApp group agent (dedicated number in residents' groups, via wa_bridge)
+        app.state.group_agent = None
+        group_settings = GroupAgentSettings.from_env()
+        if group_settings.enabled:
+            try:
+                app.state.group_agent = GroupAgentService(group_settings)
+                await app.state.group_agent.start()
+            except Exception as e:
+                logger.error(f"Group agent not initialized: {e}")
+                app.state.group_agent = None
+
         logger.info("All available handlers initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing handlers: {e}")
@@ -309,6 +323,9 @@ async def shutdown_event():
     support = getattr(app.state, "support", None)
     if support:
         await support.stop()
+    group_agent = getattr(app.state, "group_agent", None)
+    if group_agent:
+        await group_agent.stop()
 
 @app.get("/")
 async def root():
