@@ -54,8 +54,13 @@ const groupNames = new Map() // group jid -> subject
 
 async function loadAuth() {
   if (DATABASE_URL) {
-    const auth = await usePostgresAuthState(DATABASE_URL)
-    return { ...auth, where: 'PostgreSQL (wa_auth table)' }
+    try {
+      const auth = await usePostgresAuthState(DATABASE_URL)
+      return { ...auth, where: 'PostgreSQL (wa_auth table)' }
+    } catch (e) {
+      // Never let a database problem stop the bridge: fall back to files (lost on redeploy)
+      log('Could not use PostgreSQL for the session, falling back to files:', e.message)
+    }
   }
   const auth = await useMultiFileAuthState(AUTH_DIR)
   return { ...auth, clear: () => rm(AUTH_DIR, { recursive: true, force: true }), where: AUTH_DIR }
@@ -242,7 +247,9 @@ http
     if (!authorised(req)) return send(res, 401, { error: 'unauthorised' })
     try {
       if (req.method === 'GET' && req.url === '/health') {
-        return send(res, 200, { connected, me: sock?.user?.id || null, groups: groupNames.size })
+        return send(res, 200, {
+          connected, me: sock?.user?.id || null, groups: groupNames.size, session: auth?.where || null,
+        })
       }
       if (req.method === 'GET' && req.url === '/qr') {
         if (!currentQr) return send(res, 404, { error: connected ? 'already linked' : 'no QR yet' })
