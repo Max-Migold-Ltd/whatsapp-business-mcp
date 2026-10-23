@@ -32,6 +32,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_FLOW = os.path.join(ROOT, "support_bot", "flow.json")
 
 # Must match support_bot/sharepoint.py (EXCEL_COLUMNS and ticket_columns)
+STAFF_COLUMNS = ["Name", "WhatsApp Number", "Role", "Escalation", "Notes"]
+STAFF_GUIDE = [
+    "How to fill this sheet",
+    "One row per person. The same staff cover every group.",
+    "WhatsApp Number: country code, no + or spaces, no leading 0 - e.g. 0803 123 4567 = 2348031234567",
+    "Role: e.g. Facility Officer, Technician, Cleaner, Supervisor, CEO",
+    "Escalation: First contact = the agent @mentions them in the group to follow up an issue",
+    "            Escalate to = messaged privately if First contact staff don't respond in time",
+    "            Observer = never @mentioned; receives the weekly report and final escalations only",
+    "Do not rename the columns or the table - the WhatsApp agent reads them.",
+]
+
 CONVERSATION_COLUMNS = [
     "Date/Time", "Phone", "Customer Name", "Direction", "Sent By",
     "Type", "Message", "Conversation State", "WhatsApp Message ID",
@@ -122,6 +134,17 @@ def build(output, flow_path):
     # ---- Conversations ----
     conversations = wb.create_sheet("Conversations")
     add_table(conversations, "Conversations", CONVERSATION_COLUMNS, "TableStyleLight9")
+
+    # ---- Staff (read by the WhatsApp group agent) ----
+    staff = wb.create_sheet("Staff")
+    add_table(staff, "Staff", STAFF_COLUMNS, "TableStyleMedium2")
+    for row in range(2, 301):
+        staff.cell(row=row, column=2).number_format = "@"  # keep numbers like 234... as text
+    for col, width in (("A", 26), ("B", 20), ("C", 20), ("D", 16), ("E", 34)):
+        staff.column_dimensions[col].width = width
+    staff.column_dimensions["G"].width = 90
+    for row, text in enumerate(STAFF_GUIDE, start=1):
+        staff.cell(row=row, column=7, value=text).font = Font(bold=row == 1)
 
     # ---- How to use ----
     guide = wb.create_sheet("How to use")
