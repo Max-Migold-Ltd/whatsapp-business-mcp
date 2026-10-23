@@ -51,7 +51,8 @@ async function connect() {
     version,
     auth: state,
     logger,
-    browser: Browsers.ubuntu('Max Migold Assistant'),
+    // Must be a real browser name: WhatsApp rejects "Link with phone number" codes for custom names
+    browser: Browsers.ubuntu('Chrome'),
     markOnlineOnConnect: false, // don't show "online" all day, like a normal phone
     syncFullHistory: false,
   })
