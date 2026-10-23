@@ -5,6 +5,7 @@ Settings for the WhatsApp group agent, read from environment variables.
 import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -14,6 +15,18 @@ MODE_REPLY = "reply"    # may reply, but only in GROUP_AGENT_REPLY_CHATS
 
 def _flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _api_base(url: str) -> Optional[str]:
+    """'http://host:8000' -> 'http://host:8000/v1' (vLLM and most servers serve the API under /v1)."""
+    url = url.strip().rstrip("/")
+    if not url:
+        return None
+    if url.endswith("/chat/completions"):
+        url = url[: -len("/chat/completions")]
+    if urlparse(url).path in ("", "/"):
+        url += "/v1"
+    return url
 
 
 @dataclass(frozen=True)
@@ -34,6 +47,7 @@ class GroupAgentSettings:
     llm_model: Optional[str]
     llm_temperature: float
     llm_timeout: float
+    llm_tool_mode: str  # auto | tools | json
 
     # Pacing
     history_size: int
@@ -62,11 +76,12 @@ class GroupAgentSettings:
             prompt_file=os.getenv("GROUP_AGENT_PROMPT_FILE", os.path.join(_PACKAGE_DIR, "prompt.md")),
             bridge_url=os.getenv("BRIDGE_URL", "http://127.0.0.1:3100").rstrip("/"),
             bridge_secret=os.getenv("BRIDGE_SECRET") or None,
-            llm_base_url=(os.getenv("LLM_BASE_URL") or "").rstrip("/") or None,
+            llm_base_url=_api_base(os.getenv("LLM_BASE_URL") or ""),
             llm_api_key=os.getenv("LLM_API_KEY") or None,
             llm_model=os.getenv("LLM_MODEL") or None,
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
             llm_timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "60")),
+            llm_tool_mode=os.getenv("LLM_TOOL_MODE", "auto").strip().lower(),
             history_size=int(os.getenv("GROUP_AGENT_HISTORY", "30")),
             debounce_seconds=float(os.getenv("GROUP_AGENT_DEBOUNCE_SECONDS", "6")),
             min_reply_gap_seconds=float(os.getenv("GROUP_AGENT_MIN_REPLY_GAP_SECONDS", "60")),

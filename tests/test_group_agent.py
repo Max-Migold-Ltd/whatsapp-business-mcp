@@ -281,3 +281,140 @@ def test_made_up_reply_to_ids_are_not_quoted(client, sent):
     agent(client).llm.complete = bad_quote
     post(client, event("M1", "Gate is broken"))
     assert sent == [{"chat": GROUP, "text": "Noted, thanks.", "quoted": None}]
+
+
+# ================================
+# vLLM COMPATIBILITY
+# ================================
+
+def _vllm(monkeypatch, handler):
+    from group_agent import llm as llm_module
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient",
+                        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+
+
+def _reply_tools():
+    from group_agent.agent import TOOLS
+    return TOOLS
+
+
+def test_base_url_normalisation(monkeypatch):
+    from group_agent.config import _api_base
+
+    assert _api_base("http://10.0.0.5:8000") == "http://10.0.0.5:8000/v1"
+    assert _api_base("http://10.0.0.5:8000/") == "http://10.0.0.5:8000/v1"
+    assert _api_base("http://10.0.0.5:8000/v1/") == "http://10.0.0.5:8000/v1"
+    assert _api_base("http://10.0.0.5:8000/v1/chat/completions") == "http://10.0.0.5:8000/v1"
+    assert _api_base("https://api.example.com/openai/v1") == "https://api.example.com/openai/v1"
+    assert _api_base("") is None
+
+
+def test_vllm_without_api_key_sends_no_auth_header(monkeypatch):
+    from group_agent.llm import ChatLLM
+
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+    _vllm(monkeypatch, handler)
+    asyncio.run(ChatLLM("http://vllm:8000/v1", None, "Qwen/Qwen2.5-7B-Instruct").complete(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}], _reply_tools()))
+    assert "authorization" not in {k.lower() for k in seen[0].headers}
+    assert str(seen[0].url) == "http://vllm:8000/v1/chat/completions"
+
+
+def test_vllm_refusing_tools_falls_back_to_json(monkeypatch):
+    from group_agent.llm import ChatLLM
+
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "tools" in body:  # vLLM started without --enable-auto-tool-choice
+            return httpx.Response(400, json={"object": "error", "message":
+                '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set'})
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content":
+            '<think>The resident reports a leak, I should acknowledge.</think>\n'
+            '{"tool": "send_reply", "arguments": {"text": "Sorry about the leak, which flat?", "reply_to": "M1"}}'}}]})
+
+    _vllm(monkeypatch, handler)
+    llm = ChatLLM("http://vllm:8000/v1", None, "Qwen/Qwen3-8B")
+    msgs = [{"role": "system", "content": "rules"}, {"role": "user", "content": "[msg M1] Ada: pipe leaking"}]
+    answer = asyncio.run(llm.complete(msgs, _reply_tools()))
+    call = answer["tool_calls"][0]["function"]
+    assert call["name"] == "send_reply"
+    assert json.loads(call["arguments"]) == {"text": "Sorry about the leak, which flat?", "reply_to": "M1"}
+    assert "tools" not in bodies[-1] and "ONE JSON object" in bodies[-1]["messages"][0]["content"]
+    assert llm.tool_mode == "json"  # remembered: no more failing tool requests
+
+    asyncio.run(llm.complete(msgs, _reply_tools()))
+    assert all("tools" not in b for b in bodies[2:])
+
+
+def test_json_mode_silence(monkeypatch):
+    from group_agent.llm import ChatLLM
+
+    _vllm(monkeypatch, lambda r: httpx.Response(200, json={"choices": [{"message": {
+        "role": "assistant", "content": 'Just a greeting. {"tool": null}'}}]}))
+    answer = asyncio.run(ChatLLM("http://vllm:8000/v1", None, "m", tool_mode="json").complete(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}], _reply_tools()))
+    assert answer["tool_calls"] == []
+
+
+def test_tool_call_left_in_text_is_recovered(monkeypatch):
+    from group_agent.llm import ChatLLM
+
+    _vllm(monkeypatch, lambda r: httpx.Response(200, json={"choices": [{"message": {
+        "role": "assistant", "content": '<tool_call>\n{"name": "send_reply", "arguments": {"text": "Noted!"}}\n</tool_call>'}}]}))
+    answer = asyncio.run(ChatLLM("http://vllm:8000/v1", None, "m").complete(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}], _reply_tools()))
+    assert json.loads(answer["tool_calls"][0]["function"]["arguments"]) == {"text": "Noted!"}
+
+
+def test_unreachable_llm_is_a_clean_error(monkeypatch):
+    from group_agent.llm import ChatLLM, LLMError
+
+    def handler(request):
+        raise httpx.ConnectError("refused")
+
+    _vllm(monkeypatch, handler)
+    with pytest.raises(LLMError, match="unreachable"):
+        asyncio.run(ChatLLM("http://vllm:8000/v1", None, "m").complete(
+            [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}], _reply_tools()))
+
+
+def test_json_mode_end_to_end_in_group(client, sent, monkeypatch):
+    from group_agent.llm import ChatLLM
+
+    def handler(request):
+        body = json.loads(request.content)
+        if "tools" in body:
+            return httpx.Response(400, json={"message": "tool choice requires --enable-auto-tool-choice"})
+        if any("Tool result" in (m.get("content") or "") for m in body["messages"]):
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": '{"tool": null}'}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content":
+            '{"tool": "send_reply", "arguments": {"text": "Noted - the facility team will be informed.", "reply_to": "M1"}}'}}]})
+
+    _vllm(monkeypatch, handler)
+    agent(client).llm = ChatLLM("http://vllm:8000/v1", None, "m")
+    post(client, event("M1", "The gate light at Block C is off"))
+    assert sent == [{"chat": GROUP, "quoted": "M1", "text": "Noted - the facility team will be informed."}]
+
+
+def test_llm_check_endpoint_dry_run(client, sent, monkeypatch):
+    from group_agent.llm import ChatLLM
+
+    _vllm(monkeypatch, lambda r: httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None,
+        "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "send_reply",
+            "arguments": json.dumps({"text": "Sorry Ada, which flat? I'll inform the team.", "reply_to": "CHECK1"})}}]}}]}))
+    client.app.state.group_agent.settings = client.app.state.group_agent.settings.__class__(
+        **{**client.app.state.group_agent.settings.__dict__, "llm_base_url": "http://vllm:8000/v1", "llm_model": "m"})
+    agent(client).llm = ChatLLM("http://vllm:8000/v1", None, "m")
+    body = client.post("/api/v1/group-agent/llm-check", headers={"X-API-Key": API_KEY}).json()
+    assert body["ok"] and body["would_reply"] and body["reply"].startswith("Sorry Ada")
+    assert sent == []  # dry run: nothing sent to WhatsApp

@@ -6,6 +6,7 @@ HTTP routes for the group agent.
 """
 
 import hmac
+import json
 import os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -56,6 +57,42 @@ async def status(service: GroupAgentService = Depends(get_service)):
         "llm": service.agent.llm.name,
         "bridge": bridge,
         "chats": service.store.chats(),
+    }
+
+
+@router.post("/api/v1/group-agent/llm-check", dependencies=[Depends(require_api_key_configured)])
+async def llm_check(service: GroupAgentService = Depends(get_service)):
+    """Send one test conversation to the configured LLM, from this server, and report what came back."""
+    from .agent import TOOLS
+    from .llm import LLMError
+
+    llm = service.agent.llm
+    if not service.settings.llm_configured:
+        return {"ok": False, "llm": llm.name, "detail": "No LLM configured: set LLM_BASE_URL and LLM_MODEL"}
+    messages = [
+        {"role": "system", "content": service.agent.system_prompt},
+        {"role": "user", "content": "WhatsApp group: Test group\n\nNEW MESSAGES since you last looked:\n"
+                                    "[msg CHECK1] 23 Oct 09:00 Ada: Good morning, there's no water in my flat since 6am\n\n"
+                                    "Decide whether any NEW message needs a reply. If not, do not call any tool."},
+    ]
+    try:
+        answer = await llm.complete(messages, TOOLS)
+    except LLMError as e:
+        return {"ok": False, "llm": llm.name, "detail": str(e)}
+    calls = answer.get("tool_calls") or []
+    reply = None
+    if calls:
+        try:
+            reply = json.loads(calls[0]["function"]["arguments"]).get("text")
+        except (ValueError, KeyError, TypeError):
+            reply = calls[0]["function"].get("arguments")
+    return {
+        "ok": True,
+        "llm": llm.name,  # shows whether native tool calling or the JSON fallback is in use
+        "would_reply": bool(calls),
+        "reply": reply,
+        "raw_content": (answer.get("content") or "")[:500] or None,
+        "note": "Nothing was sent to WhatsApp - this was a dry run.",
     }
 
 

@@ -66,6 +66,25 @@ PostgreSQL table `wa_auth`, so the phone stays linked across redeploys. Treat th
 anyone with it can act as the WhatsApp number. If the phone removes the linked device, the session is cleared
 automatically and a new pairing code or QR can be requested.
 
+## Using a self-hosted vLLM model
+
+vLLM serves an OpenAI-compatible API, so no code changes are needed:
+
+```
+LLM_BASE_URL=http://<vllm-host>:8000/v1   # "/v1" is added automatically if left off
+LLM_MODEL=<the model name vLLM serves, as listed by GET /v1/models>
+# LLM_API_KEY is not needed unless vLLM was started with --api-key
+```
+
+The agent decides when to reply through tool calling. vLLM supports that only when started with
+`--enable-auto-tool-choice --tool-call-parser <parser>` (e.g. `hermes` for Qwen, `llama3_json` for Llama 3).
+If it wasn't, nothing breaks: with `LLM_TOOL_MODE=auto` (default) the agent notices the refusal and switches to
+asking the model for a JSON answer instead. `<think>` reasoning blocks are ignored.
+
+The Depot server must be able to reach the vLLM address. Check it with
+`POST /api/v1/group-agent/llm-check` (header `X-API-Key`): a dry run that sends one test conversation to the
+model and shows the reply it would give - nothing is sent to WhatsApp.
+
 ## Endpoints (all need `X-API-Key`)
 
 | Endpoint | Returns |
@@ -73,5 +92,6 @@ automatically and a new pairing code or QR can be requested.
 | `GET /api/v1/group-agent/status` | Mode, LLM in use, bridge connection, message counts per group |
 | `POST /api/v1/group-agent/pair` | Pairing code for "Link with phone number" |
 | `GET /api/v1/group-agent/qr` | Login QR code (PNG) |
+| `POST /api/v1/group-agent/llm-check` | Dry-run test of the LLM connection and its reply |
 | `GET /api/v1/group-agent/groups` | Groups the number is in, with member counts |
 | `GET /api/v1/group-agent/messages?chat=<id>` | Stored messages, newest first |
