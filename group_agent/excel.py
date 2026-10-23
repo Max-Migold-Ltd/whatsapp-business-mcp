@@ -23,6 +23,9 @@ COLUMNS = [
     "Acknowledged", "First Staff Response", "Response Time (min)", "Staff", "Reminders", "Escalated",
     "Resolved", "Resolved By", "Score", "Feedback", "Closed",
 ]
+DATE_COLUMNS = {"Opened", "Acknowledged", "First Staff Response", "Escalated", "Resolved", "Closed"}
+# Sent with every row so dates show as dates and phone numbers stay text
+ROW_FORMAT = ["yyyy-mm-dd hh:mm" if c in DATE_COLUMNS else "@" if c == "Resident Phone" else "General" for c in COLUMNS]
 
 
 def _when(ts: Optional[int], tz: ZoneInfo) -> str:
@@ -103,11 +106,16 @@ class GroupIssuesExcel:
                 if existing is not None:  # update its row, or fill the table's empty starter row
                     index = refs.index(existing)
                     refs[index] = issue["ref"]
-                    response = await client.patch(f"{table}/rows/itemAt(index={index})/range", headers=headers,
-                                                  json={"values": [row]})
                 else:
+                    index = len(refs)
                     response = await client.post(f"{table}/rows", headers=headers, json={"values": [row]})
+                    if response.status_code >= 300:
+                        raise RuntimeError(f"Adding {issue['ref']} failed ({response.status_code}): {response.text[:200]}")
                     refs.append(issue["ref"])
+                # Format first, then write, so phone numbers are kept as text
+                row_range = f"{table}/rows/itemAt(index={index})/range"
+                await client.patch(row_range, headers=headers, json={"numberFormat": [ROW_FORMAT]})
+                response = await client.patch(row_range, headers=headers, json={"values": [row]})
                 if response.status_code >= 300:
                     raise RuntimeError(f"Writing {issue['ref']} failed ({response.status_code}): {response.text[:200]}")
                 written.append(issue)
