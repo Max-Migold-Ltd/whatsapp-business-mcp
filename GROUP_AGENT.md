@@ -61,9 +61,10 @@ feedback/NPS come next, as further LLM tools.
 5. To test replies, create a small test group, then set `GROUP_AGENT_MODE=reply` and
    `GROUP_AGENT_REPLY_CHATS=<test group name>`.
 
-**Known limitation:** the linked session is stored in `/data/wa_auth`, which Depot does not keep across
-redeploys - after each redeploy the phone must be linked again. Moving the session into the PostgreSQL
-database is planned.
+**Staying linked:** with `DATABASE_URL` set (as on Depot), the linked-device session is stored in the
+PostgreSQL table `wa_auth`, so the phone stays linked across redeploys. Treat that table as a password:
+anyone with it can act as the WhatsApp number. If the phone removes the linked device, the session is cleared
+automatically and a new pairing code or QR can be requested.
 
 ## Endpoints (all need `X-API-Key`)
 

@@ -5,7 +5,7 @@ FROM node:22-slim AS bridge
 WORKDIR /bridge
 COPY wa_bridge/package.json wa_bridge/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-COPY wa_bridge/index.js ./
+COPY wa_bridge/*.js ./
 
 # --- Stage 2: the app ---
 FROM python:3.12-slim

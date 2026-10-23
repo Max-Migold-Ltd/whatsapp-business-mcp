@@ -72,7 +72,7 @@ class StubLLM:
             "id": f"call_{uuid.uuid4().hex[:8]}",
             "type": "function",
             "function": {"name": "send_reply", "arguments": json.dumps({
-                "text": "Hello! I'm the Max Migold Assistant and I can see this group. "
+                "text": "Hello! I'm the Max Migold Assistant and I can see this chat. "
                         "(Test mode: my full replies will be switched on soon.)",
                 "reply_to": msg_id,
             })},

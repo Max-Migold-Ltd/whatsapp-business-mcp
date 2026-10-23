@@ -12,6 +12,7 @@
 //   POST /send     -> { chat, text, quoted? }  sends a message, returns { id }
 
 import http from 'node:http'
+import { rm } from 'node:fs/promises'
 import { timingSafeEqual } from 'node:crypto'
 import makeWASocket, {
   Browsers,
@@ -21,12 +22,15 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import pino from 'pino'
 import QRCode from 'qrcode'
+import { usePostgresAuthState } from './pg-auth.js'
 
 const PORT = Number(process.env.BRIDGE_PORT || 3100)
 const HOST = process.env.BRIDGE_HOST || '127.0.0.1'
 const SECRET = process.env.BRIDGE_SECRET || ''
 const AGENT_URL = process.env.AGENT_EVENTS_URL || 'http://127.0.0.1:3000/group-agent/events'
 const AUTH_DIR = process.env.BRIDGE_AUTH_DIR || './wa_auth'
+// With DATABASE_URL (PostgreSQL) the session is kept in the database and survives redeploys
+const DATABASE_URL = /^postgres(ql)?:\/\//.test(process.env.DATABASE_URL || '') ? process.env.DATABASE_URL : null
 
 if (!SECRET) {
   console.error('BRIDGE_SECRET is required')
@@ -36,6 +40,11 @@ if (!SECRET) {
 const logger = pino({ level: process.env.BRIDGE_LOG_LEVEL || 'warn' })
 const log = (...args) => console.log(new Date().toISOString(), '[bridge]', ...args)
 
+const IGNORED_KINDS = new Set([
+  'protocolMessage', 'senderKeyDistributionMessage', 'messageContextInfo', 'keepInChatMessage',
+  'pinInChatMessage', 'encReactionMessage', 'pollUpdateMessage',
+])
+
 let sock = null
 let connected = false
 let currentQr = null
@@ -43,8 +52,23 @@ const groupNames = new Map() // group jid -> subject
 
 // ---------- WhatsApp connection ----------
 
+async function loadAuth() {
+  if (DATABASE_URL) {
+    const auth = await usePostgresAuthState(DATABASE_URL)
+    return { ...auth, where: 'PostgreSQL (wa_auth table)' }
+  }
+  const auth = await useMultiFileAuthState(AUTH_DIR)
+  return { ...auth, clear: () => rm(AUTH_DIR, { recursive: true, force: true }), where: AUTH_DIR }
+}
+
+let auth = null
+
 async function connect() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
+  if (!auth) {
+    auth = await loadAuth()
+    log('WhatsApp session stored in', auth.where)
+  }
+  const { state, saveCreds } = auth
   const { version } = await fetchLatestBaileysVersion()
 
   sock = makeWASocket({
@@ -75,7 +99,11 @@ async function connect() {
       connected = false
       const code = lastDisconnect?.error?.output?.statusCode
       if (code === DisconnectReason.loggedOut) {
-        log('Logged out from the phone. Delete', AUTH_DIR, 'and restart to link again.')
+        // Unlinked from the phone: forget the session and offer a fresh link (QR / pairing code)
+        log('Logged out from the phone - clearing the session so it can be linked again')
+        await auth.clear().catch((e) => log('Could not clear session:', e.message))
+        auth = null
+        setTimeout(() => connect().catch((e) => log('Reconnect failed:', e.message)), 5000)
         return
       }
       log('Connection closed (code', code, ') - reconnecting in 5s')
@@ -130,7 +158,12 @@ async function toEvent(msg) {
     content.videoMessage?.caption ||
     content.documentMessage?.caption ||
     ''
-  const kind = Object.keys(content).find((k) => k.endsWith('Message') || k === 'conversation') || 'unknown'
+  // Ignore WhatsApp's own plumbing (key distribution, sync, deletes); a group message's first
+  // delivery carries a senderKeyDistributionMessage next to the real content, so skip that key
+  const kind = Object.keys(content).find(
+    (k) => (k.endsWith('Message') || k === 'conversation') && !IGNORED_KINDS.has(k),
+  )
+  if (!kind) return null
   const context = content.extendedTextMessage?.contextInfo || content.imageMessage?.contextInfo || {}
   const isGroup = chat.endsWith('@g.us')
   // Baileys 7 may identify people by a privacy id (@lid); prefer the phone-number form when given
