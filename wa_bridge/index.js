@@ -9,7 +9,8 @@
 //   GET  /qr       -> PNG of the current login QR code (404 once linked)
 //   GET  /groups   -> [{ id, name, participants }]
 //   POST /pair     -> { phone }  returns { code } to link via "Link with phone number" instead of the QR
-//   POST /send     -> { chat, text, quoted? }  sends a message, returns { id }
+//   POST /send     -> { chat, text, quoted?, mentions? }  sends a message, returns { id }
+//                     mentions = phone numbers; write them in the text as @2348031234567
 
 import http from 'node:http'
 import { rm } from 'node:fs/promises'
@@ -229,7 +230,29 @@ function send(res, status, payload, type = 'application/json') {
   res.end(type === 'application/json' ? JSON.stringify(payload) : payload)
 }
 
-async function sendText(chat, text, quotedId) {
+// The agent mentions people by phone number ("@2348031234567" in the text). Groups using privacy ids
+// (@lid) know members by that id instead, so map each number to the id this group uses.
+async function resolveMentions(chat, text, phones) {
+  const digits = (phones || []).map((p) => String(p).replace(/\D/g, '')).filter(Boolean)
+  if (!digits.length) return { text, mentions: [] }
+  let participants = []
+  if (chat.endsWith('@g.us')) {
+    participants = (await sock.groupMetadata(chat).catch(() => null))?.participants || []
+  }
+  const mentions = []
+  for (const phone of digits) {
+    const member = participants.find((p) =>
+      [p.phoneNumber, p.jid, p.id].some((id) => id && id.split('@')[0].split(':')[0] === phone))
+    const jid = member?.id || `${phone}@s.whatsapp.net`
+    mentions.push(jid)
+    text = text.split(`@${phone}`).join(`@${jid.split('@')[0]}`)
+  }
+  return { text, mentions }
+}
+
+async function sendText(chat, text, quotedId, mentionPhones) {
+  const resolved = await resolveMentions(chat, text, mentionPhones)
+  text = resolved.text
   // Behave like a person: show "typing…" for a moment proportional to the length
   await sock.presenceSubscribe(chat).catch(() => {})
   await sock.sendPresenceUpdate('composing', chat).catch(() => {})
@@ -238,7 +261,8 @@ async function sendText(chat, text, quotedId) {
   const options = quotedId
     ? { quoted: { key: { remoteJid: chat, id: quotedId }, message: { conversation: '' } } }
     : {}
-  const sent = await sock.sendMessage(chat, { text }, options)
+  const content = resolved.mentions.length ? { text, mentions: resolved.mentions } : { text }
+  const sent = await sock.sendMessage(chat, content, options)
   return sent?.key?.id
 }
 
@@ -273,9 +297,9 @@ http
       }
       if (req.method === 'POST' && req.url === '/send') {
         if (!connected) return send(res, 503, { error: 'not connected' })
-        const { chat, text, quoted } = await readJson(req)
+        const { chat, text, quoted, mentions } = await readJson(req)
         if (!chat || !text) return send(res, 400, { error: 'chat and text are required' })
-        return send(res, 200, { id: await sendText(chat, text, quoted) })
+        return send(res, 200, { id: await sendText(chat, text, quoted, mentions) })
       }
       send(res, 404, { error: 'not found' })
     } catch (e) {

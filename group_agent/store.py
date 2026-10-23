@@ -29,8 +29,51 @@ CREATE TABLE IF NOT EXISTS group_messages (
     synced      {int} NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_group_messages_chat ON group_messages(chat_id, ts);
-CREATE INDEX IF NOT EXISTS idx_group_messages_unsynced ON group_messages(synced, id)
+CREATE INDEX IF NOT EXISTS idx_group_messages_unsynced ON group_messages(synced, id);
+
+-- One row per resident issue raised in a group, from report to feedback
+CREATE TABLE IF NOT EXISTS group_issues (
+    id                  {pk},
+    ref                 TEXT UNIQUE,
+    chat_id             TEXT NOT NULL,
+    chat_name           TEXT,
+    resident_id         TEXT,
+    resident_name       TEXT,
+    reported_msg_id     TEXT,
+    summary             TEXT NOT NULL,
+    service_area        TEXT,
+    status              TEXT NOT NULL,
+    opened_at           {int} NOT NULL,
+    acknowledged_at     {int},
+    staff_response_at   {int},
+    staff_name          TEXT,
+    reminders           {int} NOT NULL DEFAULT 0,
+    reminded_at         {int},
+    escalated_at        {int},
+    resolved_at         {int},
+    resolved_by         TEXT,
+    survey_sent_at      {int},
+    score               {int},
+    feedback            TEXT,
+    closed_at           {int},
+    notes               TEXT,
+    synced              {int} NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_group_issues_chat ON group_issues(chat_id, status);
+CREATE INDEX IF NOT EXISTS idx_group_issues_unsynced ON group_issues(synced, id)
 """
+
+# Issue statuses
+OPEN = "Open"                            # reported, waiting for staff
+IN_PROGRESS = "In Progress"              # a staff member has responded
+AWAITING_FEEDBACK = "Awaiting Feedback"  # staff said done; resident asked for a rating
+CLOSED = "Closed"                        # rating received
+CLOSED_NO_FEEDBACK = "Closed - No Feedback"
+ACTIVE_STATUSES = (OPEN, IN_PROGRESS, AWAITING_FEEDBACK)
+
+
+def issue_ref(issue_id: int) -> str:
+    return f"MMF-G{issue_id:05d}"
 
 
 class GroupStore:
@@ -80,6 +123,58 @@ class GroupStore:
                 "SELECT * FROM group_messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT ?", (chat_id, limit)
             )
         return self.db.query("SELECT * FROM group_messages ORDER BY ts DESC, id DESC LIMIT ?", (limit,))
+
+    # ================================
+    # ISSUES
+    # ================================
+
+    def create_issue(
+        self, chat_id: str, chat_name: Optional[str], resident_id: Optional[str], resident_name: Optional[str],
+        reported_msg_id: Optional[str], summary: str, service_area: Optional[str], opened_at: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        with self.db.transaction():
+            row = self.db.one(
+                """INSERT INTO group_issues (chat_id, chat_name, resident_id, resident_name, reported_msg_id,
+                       summary, service_area, status, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
+                (chat_id, chat_name, resident_id, resident_name, reported_msg_id, summary, service_area, OPEN,
+                 int(opened_at or time.time())),
+            )
+            self.db.execute("UPDATE group_issues SET ref = ? WHERE id = ?", (issue_ref(row["id"]), row["id"]))
+            return self.db.one("SELECT * FROM group_issues WHERE id = ?", (row["id"],))
+
+    def get_issue(self, ref: str) -> Optional[Dict[str, Any]]:
+        return self.db.one("SELECT * FROM group_issues WHERE ref = ?", ((ref or "").strip().upper(),))
+
+    def update_issue(self, ref: str, **fields: Any) -> Dict[str, Any]:
+        fields["synced"] = 0  # changed -> write it to Excel again
+        assignments = ", ".join(f"{column} = ?" for column in fields)
+        self.db.execute(f"UPDATE group_issues SET {assignments} WHERE ref = ?", (*fields.values(), ref))
+        return self.get_issue(ref)
+
+    def active_issues(self, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        marks = ", ".join("?" for _ in ACTIVE_STATUSES)
+        if chat_id:
+            return self.db.query(
+                f"SELECT * FROM group_issues WHERE chat_id = ? AND status IN ({marks}) ORDER BY id",
+                (chat_id, *ACTIVE_STATUSES),
+            )
+        return self.db.query(f"SELECT * FROM group_issues WHERE status IN ({marks}) ORDER BY id", ACTIVE_STATUSES)
+
+    def list_issues(self, limit: int = 500) -> List[Dict[str, Any]]:
+        return self.db.query("SELECT * FROM group_issues ORDER BY id DESC LIMIT ?", (limit,))
+
+    def unsynced_issues(self, limit: int = 50) -> List[Dict[str, Any]]:
+        return self.db.query("SELECT * FROM group_issues WHERE synced = 0 ORDER BY id LIMIT ?", (limit,))
+
+    def mark_issues_synced(self, refs_and_versions: List[Dict[str, Any]]) -> None:
+        for issue in refs_and_versions:
+            # Only if unchanged since it was read, so an update made meanwhile is synced next time
+            self.db.execute(
+                "UPDATE group_issues SET synced = 1 WHERE ref = ? AND status = ? AND COALESCE(reminders, 0) = ?"
+                " AND COALESCE(score, -1) = ? AND COALESCE(staff_response_at, 0) = ? AND COALESCE(escalated_at, 0) = ?",
+                (issue["ref"], issue["status"], issue["reminders"] or 0, -1 if issue["score"] is None else issue["score"],
+                 issue["staff_response_at"] or 0, issue["escalated_at"] or 0),
+            )
 
     def chats(self) -> List[Dict[str, Any]]:
         return self.db.query(

@@ -56,6 +56,12 @@ async def status(service: GroupAgentService = Depends(get_service)):
         "reply_chats": list(s.reply_chats),
         "llm": service.agent.llm.name,
         "bridge": bridge,
+        "staff": {"count": len(service.staff.members), "members": service.staff.summary(),
+                  "error": service.staff.error},
+        "timers": {"reminder_minutes": s.reminder_minutes, "escalate_minutes": s.escalate_minutes,
+                   "feedback_hours": s.feedback_hours},
+        "open_issues": len(service.store.active_issues()),
+        "excel_error": service.excel_error,
         "chats": service.store.chats(),
     }
 
@@ -118,6 +124,11 @@ async def pairing_code(request: Request, service: GroupAgentService = Depends(ge
 @router.get("/api/v1/group-agent/groups", dependencies=[Depends(require_api_key_configured)])
 async def groups(service: GroupAgentService = Depends(get_service)):
     return {"status": "success", "data": await service.bridge.groups()}
+
+
+@router.get("/api/v1/group-agent/issues", dependencies=[Depends(require_api_key_configured)])
+async def issues(limit: int = 200, service: GroupAgentService = Depends(get_service)):
+    return {"status": "success", "data": service.store.list_issues(min(limit, 2000))}
 
 
 @router.get("/api/v1/group-agent/messages", dependencies=[Depends(require_api_key_configured)])

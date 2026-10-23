@@ -12,8 +12,32 @@ Residents' groups ──▶ dedicated phone number, linked like WhatsApp Web
                         └──────────── reply ◀── send_reply tool ◀───┴─ asks the LLM: reply or stay silent?
 ```
 
-**Status: milestone 1 - see messages and reply.** Ticket logging to Excel, "done" detection and
-feedback/NPS come next, as further LLM tools.
+## The issue workflow
+
+```
+Resident reports ──▶ agent logs it (MMF-G00012) and acknowledges in the group
+                         │
+   no staff response ────┼── after 30 min ──▶ @mentions the "First contact" staff in the group
+                         └── after 60 min ──▶ private message to the "Escalate to" staff
+Staff responds ──────▶ In Progress
+Staff says "done" ───▶ agent asks the resident in the group: "how likely are you to recommend us, 0-10?"
+Resident rates ──────▶ Closed, score recorded for NPS   (no rating in 24 h ──▶ Closed - No Feedback)
+```
+
+- The **LLM** reads the conversation and uses tools: `log_issue`, `update_issue` (staff responded / done),
+  `record_feedback` (the rating) and `send_reply`. Only staff messages can move an issue on, and a staff
+  message is never logged as an issue.
+- **Plain code** runs the timers (reminders, escalation, closing unanswered surveys), so they are predictable.
+  Safety nets: a staff reply quoting the resident's report counts as a response; a bare "8" or "8/10" from the
+  resident counts as their rating.
+- The CEO ("Observer" in the Staff sheet) is never @mentioned or messaged automatically.
+
+**Staff list:** the `Staff` sheet of the Complaints Log (Name, WhatsApp Number, Role, Escalation, Notes),
+re-read every 10 minutes. Staff are recognised by their number (or by name where WhatsApp hides numbers).
+
+**Records:** the `Group Issues` sheet of the Complaints Log - one row per issue, rewritten as it moves on
+(opened, acknowledged, first staff response and response time, reminders, escalation, resolved by, score,
+feedback, closed). The agent creates the sheet the first time it has an issue to record.
 
 > **Risk:** WhatsApp does not permit automating a normal WhatsApp account this way; the number can
 > be banned. Use a dedicated number (never the official support line), warm it up by normal use first,
@@ -35,8 +59,9 @@ feedback/NPS come next, as further LLM tools.
 | Setting | Effect |
 |---|---|
 | `GROUP_AGENT_ENABLED=false` | Off entirely; the bridge is not started |
-| `GROUP_AGENT_MODE=listen` | Reads and stores every message, **never replies** |
-| `GROUP_AGENT_MODE=reply` + `GROUP_AGENT_REPLY_CHATS=Test Group` | Replies only in the listed groups (names or ids; `*` = all) |
+| `GROUP_AGENT_MODE=listen` | Reads and stores every message, no LLM, **never sends** |
+| `GROUP_AGENT_MODE=observe` | Logs and tracks issues in every group (Group Issues sheet), **never sends** |
+| `GROUP_AGENT_MODE=reply` + `GROUP_AGENT_REPLY_CHATS=Test group` | Full agent in the listed groups (names or ids; `*` = all); every other group is observed |
 | `LLM_BASE_URL` empty | Test mode: replies only when someone writes "assistant", with a fixed message |
 
 ## Setup
@@ -94,4 +119,5 @@ model and shows the reply it would give - nothing is sent to WhatsApp.
 | `GET /api/v1/group-agent/qr` | Login QR code (PNG) |
 | `POST /api/v1/group-agent/llm-check` | Dry-run test of the LLM connection and its reply |
 | `GET /api/v1/group-agent/groups` | Groups the number is in, with member counts |
+| `GET /api/v1/group-agent/issues` | Issues with their status, timings and scores |
 | `GET /api/v1/group-agent/messages?chat=<id>` | Stored messages, newest first |

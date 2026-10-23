@@ -42,8 +42,11 @@ def sent(monkeypatch):
 
     calls = []
 
-    async def fake_send(self, chat, text, quoted=None):
-        calls.append({"chat": chat, "text": text, "quoted": quoted})
+    async def fake_send(self, chat, text, quoted=None, mentions=None):
+        entry = {"chat": chat, "text": text, "quoted": quoted}
+        if mentions:
+            entry["mentions"] = mentions
+        calls.append(entry)
         return f"OUT{len(calls)}"
 
     monkeypatch.setattr(BridgeClient, "send", fake_send)

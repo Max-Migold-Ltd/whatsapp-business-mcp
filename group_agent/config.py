@@ -9,8 +9,10 @@ from urllib.parse import urlparse
 
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-MODE_LISTEN = "listen"  # read and store everything, never reply
-MODE_REPLY = "reply"    # may reply, but only in GROUP_AGENT_REPLY_CHATS
+MODE_LISTEN = "listen"    # read and store everything; no LLM, never sends
+MODE_OBSERVE = "observe"  # LLM logs and tracks issues, but never sends anything
+MODE_REPLY = "reply"      # full agent; sends only in GROUP_AGENT_REPLY_CHATS (observes elsewhere)
+MODES = (MODE_LISTEN, MODE_OBSERVE, MODE_REPLY)
 
 
 def _flag(name: str, default: str = "false") -> bool:
@@ -49,6 +51,12 @@ class GroupAgentSettings:
     llm_timeout: float
     llm_tool_mode: str  # auto | tools | json
 
+    # Issue follow-up timers
+    reminder_minutes: float   # no staff response -> @mention first-contact staff in the group
+    escalate_minutes: float   # still none -> private message to "Escalate to" staff
+    feedback_hours: float     # no rating after staff said done -> close without a score
+    staff_table: str
+
     # Pacing
     history_size: int
     debounce_seconds: float
@@ -65,8 +73,8 @@ class GroupAgentSettings:
     @classmethod
     def from_env(cls) -> "GroupAgentSettings":
         mode = os.getenv("GROUP_AGENT_MODE", MODE_LISTEN).strip().lower()
-        if mode not in (MODE_LISTEN, MODE_REPLY):
-            raise ValueError(f"GROUP_AGENT_MODE must be '{MODE_LISTEN}' or '{MODE_REPLY}', not '{mode}'")
+        if mode not in MODES:
+            raise ValueError(f"GROUP_AGENT_MODE must be one of {', '.join(MODES)}, not '{mode}'")
         chats = tuple(c.strip() for c in os.getenv("GROUP_AGENT_REPLY_CHATS", "").split(",") if c.strip())
         return cls(
             enabled=_flag("GROUP_AGENT_ENABLED"),
@@ -82,6 +90,10 @@ class GroupAgentSettings:
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
             llm_timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "60")),
             llm_tool_mode=os.getenv("LLM_TOOL_MODE", "auto").strip().lower(),
+            reminder_minutes=float(os.getenv("GROUP_REMINDER_MINUTES", "30")),
+            escalate_minutes=float(os.getenv("GROUP_ESCALATE_MINUTES", "60")),
+            feedback_hours=float(os.getenv("GROUP_FEEDBACK_HOURS", "24")),
+            staff_table=os.getenv("GROUP_STAFF_TABLE", "Staff"),
             history_size=int(os.getenv("GROUP_AGENT_HISTORY", "30")),
             debounce_seconds=float(os.getenv("GROUP_AGENT_DEBOUNCE_SECONDS", "6")),
             min_reply_gap_seconds=float(os.getenv("GROUP_AGENT_MIN_REPLY_GAP_SECONDS", "60")),
