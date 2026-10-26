@@ -7,8 +7,13 @@ resident issue from report to feedback:
   staff says done  -> update_issue(resolved) -> agent asks the resident for a 0-10 rating
   resident rates   -> record_feedback -> closed, score kept for NPS
 
+Billing questions, bookings and general enquiries close when staff say done, without a rating.
+When a resident tags a staff member, that person gets a few minutes to answer before the
+agent acknowledges.
+
 Timers (run_timers, plain code, not the LLM) remind staff in the group when nobody has
-responded, escalate privately, and close issues whose rating never came.
+responded, escalate privately, follow up privately on issues staff took on but haven't
+finished, and close issues whose rating never came.
 
 Messages in a chat are batched for a few seconds (debounce) so a burst produces one
 decision, and the agent's own replies are spaced out per chat.
@@ -40,6 +45,9 @@ SERVICE_AREAS = [
     "Plumbing", "Cleaning", "Security", "HVAC", "Civil Work", "Waste Management",
     "Landscaping", "Electrical", "Others",
 ]
+# Not service jobs: closed without asking for a rating, so NPS reflects the work done
+NO_SURVEY_AREAS = ["Billing/Energy", "Amenities & Bookings", "General Enquiry"]
+ISSUE_AREAS = SERVICE_AREAS + NO_SURVEY_AREAS
 
 TOOLS: List[Dict[str, Any]] = [
     {"type": "function", "function": {
@@ -52,18 +60,20 @@ TOOLS: List[Dict[str, Any]] = [
     }},
     {"type": "function", "function": {
         "name": "log_issue",
-        "description": "Record a NEW problem or request a resident has reported, so the team follows it up. "
-                       "Call once per issue, then acknowledge it with send_reply quoting the ticket ref.",
+        "description": "Record a NEW problem, request or question a resident has raised, so the team follows it up. "
+                       "Call once per issue, then acknowledge it with send_reply quoting the ticket ref "
+                       "(unless the resident tagged a staff member - then the system acknowledges later if needed).",
         "parameters": {"type": "object", "properties": {
             "message_id": {"type": "string", "description": "Id of the resident's NEW message that reports it."},
             "summary": {"type": "string", "description": "The issue in a few words, e.g. 'No water in Flat 12 since 6am'."},
-            "service_area": {"type": "string", "enum": SERVICE_AREAS},
+            "service_area": {"type": "string", "enum": ISSUE_AREAS},
         }, "required": ["message_id", "summary", "service_area"]},
     }},
     {"type": "function", "function": {
         "name": "update_issue",
-        "description": "A Max Migold staff member (marked [STAFF]) has responded to an open issue "
-                       "(status in_progress) or says it is done/fixed (status resolved). Never for residents' words.",
+        "description": "A Max Migold staff member (marked [STAFF]) has responded to an open issue or promised "
+                       "to get back (status in_progress), or says it is done/fixed/answered (status resolved). "
+                       "Never for residents' words.",
         "parameters": {"type": "object", "properties": {
             "ref": {"type": "string", "description": "The issue ref, e.g. MMF-G00012."},
             "status": {"type": "string", "enum": ["in_progress", "resolved"]},
@@ -242,7 +252,7 @@ class GroupAgent:
 
         now = int(time.time())
         for ref in decision["created"]:
-            if decision["sent"]:
+            if decision["sent"] and not self.store.get_issue(ref).get("ack_due_at"):
                 self.store.update_issue(ref, acknowledged_at=now)
         await self._deterministic_follow_ups(decision)
 
@@ -284,9 +294,20 @@ class GroupAgent:
             return {"sent": False, "note": "observe mode - message not sent; carry on recording issues"}
         # Only quote a message the LLM was shown as new; ignore made-up or stale ids
         reply_to = args.get("reply_to") if args.get("reply_to") in d["new"] else None
+        if self._held_for_staff(reply_to, d):
+            d["replied"] = True
+            return {"sent": False, "note": "the resident tagged a staff member - give them time to answer; "
+                                           "the system acknowledges later if they don't. Carry on recording issues."}
         await self._send(d["chat"], d["chat_name"], text, reply_to)
         d["replied"] = d["sent"] = True
         return {"sent": True}
+
+    def _held_for_staff(self, reply_to: Optional[str], d: Dict[str, Any]) -> bool:
+        """Don't answer a resident who tagged a staff member; with no reply_to, only if every resident tagged staff."""
+        if reply_to:
+            return _tags_staff(d["new"][reply_to])
+        residents = [m for m in d["new"].values() if not self.staff.find(m["sender_id"], m["sender_name"])]
+        return bool(residents) and all(_tags_staff(m) for m in residents)
 
     def _tool_log_issue(self, args: Dict[str, Any], d: Dict[str, Any]) -> Dict[str, Any]:
         message = d["new"].get(args.get("message_id"))
@@ -297,13 +318,18 @@ class GroupAgent:
         for issue in self.store.active_issues(d["chat"]):
             if issue["reported_msg_id"] == message["msg_id"]:
                 return {"ref": issue["ref"], "note": "already logged"}
-        area = args.get("service_area") if args.get("service_area") in SERVICE_AREAS else "Others"
+        area = args.get("service_area") if args.get("service_area") in ISSUE_AREAS else "Others"
         summary = (args.get("summary") or message["text"] or "").strip()[:200]
         issue = self.store.create_issue(
             d["chat"], d["chat_name"], message["sender_id"], message["sender_name"], message["msg_id"],
             summary, area, opened_at=message["ts"],
         )
         d["created"].append(issue["ref"])
+        if _tags_staff(message):
+            wait = int(self.settings.tag_wait_minutes * 60)
+            self.store.update_issue(issue["ref"], ack_due_at=message["ts"] + wait)
+            return {"ref": issue["ref"], "next": f"do not reply - the resident tagged a staff member; if nobody from "
+                                                 f"staff answers within {_minutes(wait)} the system acknowledges it"}
         return {"ref": issue["ref"], "next": "acknowledge it with send_reply, mentioning the ref"}
 
     async def _tool_update_issue(self, args: Dict[str, Any], d: Dict[str, Any]) -> Dict[str, Any]:
@@ -329,6 +355,13 @@ class GroupAgent:
         if args.get("status") == "in_progress":
             self.store.update_issue(issue["ref"], status=IN_PROGRESS, **fields)
             return {"ref": issue["ref"], "status": IN_PROGRESS}
+
+        if issue["service_area"] in NO_SURVEY_AREAS:
+            self.store.update_issue(issue["ref"], status=CLOSED, resolved_at=now, resolved_by=staff_name,
+                                    closed_at=now, **fields)
+            logger.info("Issue %s (%s) closed - no rating asked", issue["ref"], issue["service_area"])
+            return {"ref": issue["ref"], "status": CLOSED,
+                    "note": "closed - no rating is asked for this kind of request; no message needed"}
 
         # Resolved: ask the resident for a rating, right there in the group
         self.store.update_issue(issue["ref"], status=AWAITING_FEEDBACK, resolved_at=now, resolved_by=staff_name, **fields)
@@ -394,6 +427,23 @@ class GroupAgent:
         waiting = now - issue["opened_at"]
 
         if issue["status"] == OPEN and not issue["staff_response_at"]:
+            # Staff may have answered without the LLM linking it to the issue: count any staff message
+            due = issue.get("ack_due_at")
+            if (due and now >= due) or waiting >= s.reminder_minutes * 60:
+                answer = self.store.staff_message_since(
+                    issue["chat_id"], issue["opened_at"], lambda m: self.staff.find(m["sender_id"], m["sender_name"]))
+                if answer:
+                    staff = self.staff.find(answer["sender_id"], answer["sender_name"])
+                    self.store.update_issue(issue["ref"], status=IN_PROGRESS, staff_response_at=answer["ts"],
+                                            staff_name=staff.name if staff else answer["sender_name"], ack_due_at=None)
+                    return
+            if due and now >= due and not issue["acknowledged_at"]:
+                if can_send:
+                    await self._send_late_ack(issue)
+                    self.store.update_issue(issue["ref"], acknowledged_at=now, ack_due_at=None)
+                else:
+                    self.store.update_issue(issue["ref"], ack_due_at=None)
+                return
             if issue["reminders"] == 0 and waiting >= s.reminder_minutes * 60 and can_send:
                 await self._send_reminder(issue, waiting)
                 self.store.update_issue(issue["ref"], reminders=1, reminded_at=now)
@@ -401,6 +451,14 @@ class GroupAgent:
                   and waiting >= s.escalate_minutes * 60 and s.mode == MODE_REPLY):
                 await self._send_escalation(issue, waiting)
                 self.store.update_issue(issue["ref"], escalated_at=now)
+
+        if issue["status"] == IN_PROGRESS and can_send and (issue.get("followups") or 0) < s.followup_max:
+            started = issue["staff_response_at"] or issue["opened_at"]
+            due = (issue["followed_up_at"] + s.followup_repeat_hours * 3600 if issue.get("followed_up_at")
+                   else started + s.followup_hours * 3600)
+            if now >= due:
+                await self._send_followup(issue, now - started)
+                self.store.update_issue(issue["ref"], followups=(issue.get("followups") or 0) + 1, followed_up_at=now)
 
         if issue["status"] == AWAITING_FEEDBACK:
             asked = issue["survey_sent_at"] or issue["resolved_at"] or issue["opened_at"]
@@ -426,6 +484,26 @@ class GroupAgent:
         for member in self.staff.by_escalation(ESCALATE_TO):
             await self._send(member.jid, None, text)
         logger.info("Escalated %s to %d person(s)", issue["ref"], len(self.staff.by_escalation(ESCALATE_TO)))
+
+    async def _send_late_ack(self, issue: Dict[str, Any]) -> None:
+        who = issue["resident_name"] or "Thank you"
+        text = (f"{who}, I've logged this as {issue['ref']} so it doesn't get missed. "
+                f"The team will get back to you on it.")
+        await self._send(issue["chat_id"], issue["chat_name"], text, issue["reported_msg_id"])
+        logger.info("Acknowledged %s after staff didn't answer the tag", issue["ref"])
+
+    async def _send_followup(self, issue: Dict[str, Any], since: int) -> None:
+        """Private nudge to whoever took the issue on (or the first-contact staff if unknown)."""
+        member = self.staff.find(None, issue["staff_name"]) if issue["staff_name"] else None
+        recipients = [member] if member else self.staff.by_escalation(FIRST_CONTACT)
+        opened = _local(issue["opened_at"], self.tz)
+        text = (f"Follow-up from {self.settings.assistant_name}: {issue['ref']} in \"{issue['chat_name'] or 'a group'}\" - "
+                f"{issue['resident_name'] or 'a resident'} raised \"{issue['summary']}\" on {opened}. "
+                f"It was taken up {_minutes(since)} ago but isn't marked as done yet. "
+                f"Once it's sorted, please say so in the group so it can be closed.")
+        for recipient in recipients:
+            await self._send(recipient.jid, None, text)
+        logger.info("Followed up %s with %d person(s)", issue["ref"], len(recipients))
 
     async def _send_survey(self, issue: Dict[str, Any]) -> bool:
         if not self.may_send(issue["chat_id"], issue["chat_name"]):
@@ -488,6 +566,8 @@ class GroupAgent:
         who = issue["resident_name"] or "a resident"
         if issue["status"] == OPEN:
             state = "Open - no staff response yet"
+            if issue.get("ack_due_at"):
+                state += " (resident tagged staff - waiting for them to answer)"
         elif issue["status"] == IN_PROGRESS:
             state = f"In progress - {issue['staff_name'] or 'staff'} responded"
         else:
@@ -507,6 +587,10 @@ class GroupAgent:
         if m["msg_type"] not in ("text", "conversation", "extendedText") and m["text"]:
             text = f"[{m['msg_type']}] {text}"
         reply = f" (replying to msg {m['quoted_id']})" if m["quoted_id"] else ""
+        if not m["from_me"] and "me" in _mentions(m):
+            reply += " (tagged you)"
+        elif not m["from_me"] and _tags_staff(m):
+            reply += " (tagged staff)"
         # Phone numbers in @mentions are replaced, so they never reach the LLM
         text = re.sub(r"@\d{6,}", "@someone", text)
         return f"[msg {m['msg_id']}] {when} {who}{reply}: {text}"
@@ -521,6 +605,19 @@ def _minutes(seconds: int) -> str:
     if minutes < 90:
         return f"{minutes} minutes"
     return f"{minutes // 60} hours {minutes % 60} minutes" if minutes % 60 else f"{minutes // 60} hours"
+
+
+def _mentions(message: Dict[str, Any]) -> List[str]:
+    try:
+        return json.loads(message.get("mentions") or "[]")
+    except ValueError:
+        return []
+
+
+def _tags_staff(message: Dict[str, Any]) -> bool:
+    """A resident tagged someone other than the assistant (in a flat group, that's staff)."""
+    mentions = _mentions(message)
+    return bool(mentions) and "me" not in mentions
 
 
 def _bare_score(text: Optional[str]) -> Optional[int]:

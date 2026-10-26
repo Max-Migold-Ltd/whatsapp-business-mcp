@@ -188,9 +188,15 @@ async function toEvent(msg) {
     type: kind.replace(/Message$/, '') || 'text',
     text,
     quoted_id: context.stanzaId || null,
-    mentions: context.mentionedJid || [],
+    mentions: (context.mentionedJid || []).map((jid) => (isMe(jid) ? 'me' : jid)),
     timestamp: Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
   }
+}
+
+// True for the assistant's own number or privacy id, so the agent knows when it is tagged
+function isMe(jid) {
+  const user = (id) => (id || '').split('@')[0].split(':')[0]
+  return Boolean(jid) && [sock?.user?.id, sock?.user?.lid].some((id) => id && user(id) === user(jid))
 }
 
 async function forward(event) {

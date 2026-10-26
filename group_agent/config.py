@@ -55,6 +55,10 @@ class GroupAgentSettings:
     reminder_minutes: float   # no staff response -> @mention first-contact staff in the group
     escalate_minutes: float   # still none -> private message to "Escalate to" staff
     feedback_hours: float     # no rating after staff said done -> close without a score
+    tag_wait_minutes: float   # resident tagged a staff member -> give them this long before acknowledging
+    followup_hours: float     # in progress this long without being done -> private follow-up to that staff member
+    followup_repeat_hours: float
+    followup_max: int
     staff_table: str
 
     # Pacing
@@ -93,6 +97,10 @@ class GroupAgentSettings:
             reminder_minutes=float(os.getenv("GROUP_REMINDER_MINUTES", "30")),
             escalate_minutes=float(os.getenv("GROUP_ESCALATE_MINUTES", "60")),
             feedback_hours=float(os.getenv("GROUP_FEEDBACK_HOURS", "24")),
+            tag_wait_minutes=float(os.getenv("GROUP_TAG_WAIT_MINUTES", "10")),
+            followup_hours=float(os.getenv("GROUP_FOLLOWUP_HOURS", "48")),
+            followup_repeat_hours=float(os.getenv("GROUP_FOLLOWUP_REPEAT_HOURS", "24")),
+            followup_max=int(os.getenv("GROUP_FOLLOWUP_MAX", "3")),
             staff_table=os.getenv("GROUP_STAFF_TABLE", "Staff"),
             history_size=int(os.getenv("GROUP_AGENT_HISTORY", "30")),
             debounce_seconds=float(os.getenv("GROUP_AGENT_DEBOUNCE_SECONDS", "6")),

@@ -44,7 +44,7 @@ def issue_to_row(issue: Dict[str, Any], tz: ZoneInfo) -> List[Any]:
         issue["ref"], _when(issue["opened_at"], tz), _cell(issue.get("chat_name")), _cell(issue.get("resident_name")),
         _cell("+" + phone) if phone else "", _cell(issue.get("service_area")), _cell(issue.get("summary")),
         issue["status"], _when(issue.get("acknowledged_at"), tz), _when(issue.get("staff_response_at"), tz), response,
-        _cell(issue.get("staff_name")), issue.get("reminders") or 0, _when(issue.get("escalated_at"), tz),
+        _cell(issue.get("staff_name")), (issue.get("reminders") or 0) + (issue.get("followups") or 0), _when(issue.get("escalated_at"), tz),
         _when(issue.get("resolved_at"), tz), _cell(issue.get("resolved_by")),
         "" if issue.get("score") is None else issue["score"], _cell(issue.get("feedback")), _when(issue.get("closed_at"), tz),
     ]

@@ -86,11 +86,12 @@ def world(settings, staff, tmp_path):
     store.close()
 
 
-def msg(agent, msg_id, text, sender=ADA, name="Ada Obi", quoted=None, chat=GROUP, chat_name=NAME, ts=None):
+def msg(agent, msg_id, text, sender=ADA, name="Ada Obi", quoted=None, chat=GROUP, chat_name=NAME, ts=None,
+        mentions=None):
     asyncio.run(agent.handle_event({
         "id": msg_id, "chat": chat, "chat_name": chat_name, "is_group": True, "sender": sender,
         "sender_name": name, "from_me": False, "type": "conversation", "text": text,
-        "quoted_id": quoted, "mentions": [], "timestamp": ts or int(time.time()),
+        "quoted_id": quoted, "mentions": mentions or [], "timestamp": ts or int(time.time()),
     }))
 
 
@@ -378,3 +379,101 @@ def test_group_issues_excel_upsert(world, monkeypatch):
     assert asyncio.run(excel.sync(store)) == 1
     assert "rows/itemAt(index=1)/range" in calls[-1][1]  # found by Ref, not position
     assert calls[-1][2]["values"][0][7] == "In Progress"
+
+
+# ================================
+# RESIDENT TAGS A STAFF MEMBER
+# ================================
+
+def tagged_report(agent, llm, area="Amenities & Bookings"):
+    llm.then(("log_issue", {"message_id": "T1", "summary": "Pool for a Christmas function", "service_area": area}))        .then(("send_reply", {"text": "Logged as MMF-G00001.", "reply_to": "T1"}))
+    msg(agent, "T1", "@Tunde can my company use the pool area in December?", mentions=["99887766@lid"])
+
+
+def test_tagged_staff_get_ten_minutes_before_the_agent_acknowledges(world):
+    agent, store, bridge, llm = world
+    tagged_report(agent, llm)
+    issue = store.get_issue("MMF-G00001")
+    assert bridge.sent == [] and not issue["acknowledged_at"]        # held: the LLM's reply was not sent
+    assert issue["ack_due_at"] == issue["opened_at"] + 600
+    assert "(tagged staff)" in llm.prompts[-1]
+
+    asyncio.run(agent.run_timers(now=issue["opened_at"] + 300))      # 5 minutes: still waiting
+    assert bridge.sent == []
+    asyncio.run(agent.run_timers(now=issue["opened_at"] + 601))      # 10 minutes, no staff answer
+    assert len(bridge.sent) == 1 and bridge.sent[0]["quoted"] == "T1" and "MMF-G00001" in bridge.sent[0]["text"]
+    assert store.get_issue("MMF-G00001")["acknowledged_at"]
+
+
+def test_tagged_staff_answering_in_time_means_no_acknowledgement(world):
+    agent, store, bridge, llm = world
+    tagged_report(agent, llm)
+    opened = store.get_issue("MMF-G00001")["opened_at"]
+    msg(agent, "S1", "Good morning, do you mean the residents?", sender=TUNDE, name="Tunde", ts=opened + 240)
+    asyncio.run(agent.run_timers(now=opened + 601))
+    issue = store.get_issue("MMF-G00001")
+    assert bridge.sent == [] and issue["status"] == "In Progress" and issue["staff_name"] == "Tunde Bakare"
+    assert issue["staff_response_at"] == opened + 240 and not issue["ack_due_at"]
+
+
+def test_resident_tagging_the_assistant_gets_an_answer(world):
+    agent, store, bridge, llm = world
+    llm.then(("send_reply", {"text": "Hello! I'm Max Migold's AI assistant.", "reply_to": "Q1"}))
+    msg(agent, "Q1", "@Assistant are you a bot?", mentions=["me"])
+    assert len(bridge.sent) == 1 and "(tagged you)" in llm.prompts[-1]
+
+
+# ================================
+# FOLLOW-UPS ON ISSUES STAFF TOOK ON
+# ================================
+
+def test_in_progress_issue_is_followed_up_privately(world):
+    agent, store, bridge, llm = world
+    report(agent, llm)
+    llm.then(("update_issue", {"ref": "MMF-G00001", "status": "in_progress", "note": "will get back"}))
+    msg(agent, "S1", "I will get back to you on this", sender=TUNDE, name="Tunde")
+    started = store.get_issue("MMF-G00001")["staff_response_at"]
+    before = len(bridge.sent)
+
+    asyncio.run(agent.run_timers(now=started + 47 * 3600))
+    assert len(bridge.sent) == before
+    asyncio.run(agent.run_timers(now=started + 48 * 3600))           # first follow-up after 48 hours
+    nudge = bridge.sent[-1]
+    assert nudge["chat"] == TUNDE and "MMF-G00001" in nudge["text"] and "isn't marked as done" in nudge["text"]
+    asyncio.run(agent.run_timers(now=started + 60 * 3600))           # not again until a day later
+    assert len(bridge.sent) == before + 1
+    for hours in (72, 96, 120, 144):                                  # then daily, three in total
+        asyncio.run(agent.run_timers(now=started + hours * 3600))
+    assert len(bridge.sent) == before + 3 and store.get_issue("MMF-G00001")["followups"] == 3
+
+
+# ================================
+# NO RATING FOR BILLING, BOOKINGS AND ENQUIRIES
+# ================================
+
+def test_billing_issue_closes_without_a_rating(world):
+    agent, store, bridge, llm = world
+    llm.then(("log_issue", {"message_id": "B1", "summary": "Asks how the electricity rate is calculated",
+                            "service_area": "Billing/Energy"}))        .then(("send_reply", {"text": "Logged as MMF-G00001; the team will respond.", "reply_to": "B1"}))
+    msg(agent, "B1", "Can you explain the calculation behind the rate?")
+    before = len(bridge.sent)
+    llm.then(("update_issue", {"ref": "MMF-G00001", "status": "resolved", "note": "details shared"}))
+    msg(agent, "S1", "Here are the details of collections and expenses", sender=TUNDE, name="Tunde")
+    issue = store.get_issue("MMF-G00001")
+    assert issue["status"] == "Closed" and issue["score"] is None and issue["closed_at"]
+    assert len(bridge.sent) == before                                 # no survey
+
+
+def test_new_columns_added_to_an_old_database(tmp_path):
+    import sqlite3
+    from group_agent.store import GroupStore
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE group_issues (id INTEGER PRIMARY KEY, ref TEXT, chat_id TEXT, status TEXT, "
+                "summary TEXT, opened_at INTEGER, synced INTEGER)")
+    con.commit()
+    con.close()
+    store = GroupStore(path)
+    columns = {r["name"] for r in store.db.query("PRAGMA table_info(group_issues)")}
+    assert {"ack_due_at", "followups", "followed_up_at"} <= columns
+    store.close()

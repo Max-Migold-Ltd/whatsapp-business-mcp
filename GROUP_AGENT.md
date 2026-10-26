@@ -16,27 +16,33 @@ Residents' groups ──▶ dedicated phone number, linked like WhatsApp Web
 
 ```
 Resident reports ──▶ agent logs it (MMF-G00012) and acknowledges in the group
+                     (resident tagged a staff member? that person gets 10 min to answer first)
                          │
    no staff response ────┼── after 30 min ──▶ @mentions the "First contact" staff in the group
                          └── after 60 min ──▶ private message to the "Escalate to" staff
-Staff responds ──────▶ In Progress
+Staff responds ──────▶ In Progress   (not done after 48 h ──▶ private follow-up, then daily, 3 at most)
 Staff says "done" ───▶ agent asks the resident in the group: "how likely are you to recommend us, 0-10?"
 Resident rates ──────▶ Closed, score recorded for NPS   (no rating in 24 h ──▶ Closed - No Feedback)
 ```
+
+- **Areas:** service jobs (Plumbing, Cleaning, Security, HVAC, Civil Work, Waste Management, Landscaping,
+  Electrical, Others) get the 0-10 rating. Billing/Energy, Amenities & Bookings and General Enquiry close
+  when staff say done, without a rating. The agent never discusses amounts or tariffs.
 
 - The **LLM** reads the conversation and uses tools: `log_issue`, `update_issue` (staff responded / done),
   `record_feedback` (the rating) and `send_reply`. Only staff messages can move an issue on, and a staff
   message is never logged as an issue.
 - **Plain code** runs the timers (reminders, escalation, closing unanswered surveys), so they are predictable.
-  Safety nets: a staff reply quoting the resident's report counts as a response; a bare "8" or "8/10" from the
-  resident counts as their rating.
+  Safety nets: a staff reply quoting the resident's report counts as a response, and so does any staff message
+  in the group before a reminder or a delayed acknowledgement is due; a bare "8" or "8/10" from the resident
+  counts as their rating.
 - The CEO ("Observer" in the Staff sheet) is never @mentioned or messaged automatically.
 
 **Staff list:** the `Staff` sheet of the Complaints Log (Name, WhatsApp Number, Role, Escalation, Notes),
 re-read every 10 minutes. Staff are recognised by their number (or by name where WhatsApp hides numbers).
 
 **Records:** the `Group Issues` sheet of the Complaints Log - one row per issue, rewritten as it moves on
-(opened, acknowledged, first staff response and response time, reminders, escalation, resolved by, score,
+(opened, acknowledged, first staff response and response time, reminders and follow-ups, escalation, resolved by, score,
 feedback, closed). The agent creates the sheet the first time it has an issue to record.
 
 > **Risk:** WhatsApp does not permit automating a normal WhatsApp account this way; the number can

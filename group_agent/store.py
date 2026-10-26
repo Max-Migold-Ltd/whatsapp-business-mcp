@@ -57,7 +57,10 @@ CREATE TABLE IF NOT EXISTS group_issues (
     feedback            TEXT,
     closed_at           {int},
     notes               TEXT,
-    synced              {int} NOT NULL DEFAULT 0
+    synced              {int} NOT NULL DEFAULT 0,
+    ack_due_at          {int},
+    followups           {int} NOT NULL DEFAULT 0,
+    followed_up_at      {int}
 );
 CREATE INDEX IF NOT EXISTS idx_group_issues_chat ON group_issues(chat_id, status);
 CREATE INDEX IF NOT EXISTS idx_group_issues_unsynced ON group_issues(synced, id)
@@ -70,6 +73,9 @@ AWAITING_FEEDBACK = "Awaiting Feedback"  # staff said done; resident asked for a
 CLOSED = "Closed"                        # rating received
 CLOSED_NO_FEEDBACK = "Closed - No Feedback"
 ACTIVE_STATUSES = (OPEN, IN_PROGRESS, AWAITING_FEEDBACK)
+
+# Columns added after the first release: created on databases made before them
+_ADDED_ISSUE_COLUMNS = {"ack_due_at": "{int}", "followups": "{int} NOT NULL DEFAULT 0", "followed_up_at": "{int}"}
 
 
 def issue_ref(issue_id: int) -> str:
@@ -86,6 +92,18 @@ class GroupStore:
         for statement in schema.split(";"):
             if statement.strip():
                 self.db.execute(statement)
+        self._add_columns()
+
+    def _add_columns(self) -> None:
+        int_type = "BIGINT" if self.db.postgres else "INTEGER"
+        if self.db.postgres:
+            for column, kind in _ADDED_ISSUE_COLUMNS.items():
+                self.db.execute(f"ALTER TABLE group_issues ADD COLUMN IF NOT EXISTS {column} {kind.format(int=int_type)}")
+            return
+        existing = {r["name"] for r in self.db.query("PRAGMA table_info(group_issues)")}
+        for column, kind in _ADDED_ISSUE_COLUMNS.items():
+            if column not in existing:
+                self.db.execute(f"ALTER TABLE group_issues ADD COLUMN {column} {kind.format(int=int_type)}")
 
     def close(self) -> None:
         self.db.close()
@@ -116,6 +134,14 @@ class GroupStore:
     def last_reply_at(self, chat_id: str) -> Optional[int]:
         row = self.db.one("SELECT MAX(ts) AS ts FROM group_messages WHERE chat_id = ? AND from_me = 1", (chat_id,))
         return row["ts"] if row else None
+
+    def staff_message_since(self, chat_id: str, since: int, is_staff) -> Optional[Dict[str, Any]]:
+        """The first message from staff in a chat after `since` (is_staff(message) decides)."""
+        rows = self.db.query(
+            "SELECT * FROM group_messages WHERE chat_id = ? AND ts > ? AND from_me = 0 ORDER BY ts, id LIMIT 200",
+            (chat_id, since),
+        )
+        return next((m for m in rows if is_staff(m)), None)
 
     def list_messages(self, chat_id: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
         if chat_id:
@@ -171,9 +197,11 @@ class GroupStore:
             # Only if unchanged since it was read, so an update made meanwhile is synced next time
             self.db.execute(
                 "UPDATE group_issues SET synced = 1 WHERE ref = ? AND status = ? AND COALESCE(reminders, 0) = ?"
-                " AND COALESCE(score, -1) = ? AND COALESCE(staff_response_at, 0) = ? AND COALESCE(escalated_at, 0) = ?",
+                " AND COALESCE(score, -1) = ? AND COALESCE(staff_response_at, 0) = ? AND COALESCE(escalated_at, 0) = ?"
+                " AND COALESCE(acknowledged_at, 0) = ? AND COALESCE(followups, 0) = ?",
                 (issue["ref"], issue["status"], issue["reminders"] or 0, -1 if issue["score"] is None else issue["score"],
-                 issue["staff_response_at"] or 0, issue["escalated_at"] or 0),
+                 issue["staff_response_at"] or 0, issue["escalated_at"] or 0, issue.get("acknowledged_at") or 0,
+                 issue.get("followups") or 0),
             )
 
     def chats(self) -> List[Dict[str, Any]]:
