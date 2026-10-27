@@ -1,7 +1,8 @@
 # WhatsApp Group Agent
 
 A dedicated WhatsApp number joins residents' groups as **Max Migold Assistant**. It reads every
-message and, using an LLM you choose (any OpenAI-compatible API), replies when needed.
+message and, using an LLM you choose (any OpenAI-compatible API, with an optional fallback model such as
+Gemini for when it is down), replies when needed.
 
 ```
 Residents' groups ──▶ dedicated phone number, linked like WhatsApp Web
@@ -58,6 +59,7 @@ feedback, closed). The agent creates the sheet the first time it has an issue to
 - At most one reply per decision, and at least `GROUP_AGENT_MIN_REPLY_GAP_SECONDS` (default 60) between
   replies in the same group.
 - **Only names are sent to the LLM** - never phone numbers.
+- If no model answers (main and fallback both down), it looks at the chat again every minute.
 - It identifies itself as an AI assistant and never claims to be human (in the prompt).
 
 ## Safety switches
@@ -82,6 +84,7 @@ feedback, closed). The agent creates the sheet the first time it has an issue to
    LLM_BASE_URL=https://api.your-provider.com/v1
    LLM_API_KEY=<key>
    LLM_MODEL=<model name>
+   LLM_FALLBACK_API_KEY=<Gemini API key>   # optional, see "Fallback model" below
    ```
 3. **Deploy**, then link the phone - either:
    - **Code:** `POST /api/v1/group-agent/pair` with `{"phone": "2348012345678"}` (header `X-API-Key`) returns an
