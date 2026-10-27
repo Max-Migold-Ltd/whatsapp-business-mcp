@@ -68,13 +68,22 @@ async def status(service: GroupAgentService = Depends(get_service)):
 
 @router.post("/api/v1/group-agent/llm-check", dependencies=[Depends(require_api_key_configured)])
 async def llm_check(service: GroupAgentService = Depends(get_service)):
-    """Send one test conversation to the configured LLM, from this server, and report what came back."""
-    from .agent import TOOLS
-    from .llm import LLMError
+    """Send one test conversation to the configured LLM (and to the fallback, if set), from this
+    server, and report what came back."""
+    from .llm import FallbackLLM
 
     llm = service.agent.llm
     if not service.settings.llm_configured:
         return {"ok": False, "llm": llm.name, "detail": "No LLM configured: set LLM_BASE_URL and LLM_MODEL"}
+    if isinstance(llm, FallbackLLM):
+        return {**await _check(service, llm.primary), "fallback": await _check(service, llm.fallback)}
+    return await _check(service, llm)
+
+
+async def _check(service: GroupAgentService, llm) -> dict:
+    from .agent import TOOLS
+    from .llm import LLMError
+
     messages = [
         {"role": "system", "content": service.agent.system_prompt},
         {"role": "user", "content": "WhatsApp group: Test group\n\nNEW MESSAGES since you last looked:\n"

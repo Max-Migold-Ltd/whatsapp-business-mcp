@@ -116,6 +116,22 @@ The Depot server must be able to reach the vLLM address. Check it with
 `POST /api/v1/group-agent/llm-check` (header `X-API-Key`): a dry run that sends one test conversation to the
 model and shows the reply it would give - nothing is sent to WhatsApp.
 
+## Fallback model (Gemini)
+
+If the main model fails (for example the vLLM server is down), the agent answers with a second model, and
+keeps using it for 5 minutes before trying the main one again. If both fail, it looks at the chat again every
+minute until one answers, so no complaint is missed.
+
+```
+LLM_FALLBACK_API_KEY=<Gemini API key from https://aistudio.google.com/apikey>
+# defaults: LLM_FALLBACK_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+#           LLM_FALLBACK_MODEL=gemini-flash-latest   (Google's current free tier Flash model)
+```
+
+Any OpenAI-compatible API works the same way. `POST /api/v1/group-agent/llm-check` tests both models.
+On Gemini's free tier Google may use the messages sent to improve its products; only names and message text
+are sent, never phone numbers. A paid (billing-enabled) Gemini key avoids this.
+
 ## Endpoints (all need `X-API-Key`)
 
 | Endpoint | Returns |

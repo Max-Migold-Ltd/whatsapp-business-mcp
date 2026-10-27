@@ -41,6 +41,7 @@ from .store import (
 logger = logging.getLogger("group-agent")
 
 MAX_TOOL_ROUNDS = 4
+LLM_RETRY_SECONDS = 60  # LLM down (main and fallback): look at the chat again after this
 SERVICE_AREAS = [
     "Plumbing", "Cleaning", "Security", "HVAC", "Civil Work", "Waste Management",
     "Landscaping", "Electrical", "Others",
@@ -238,7 +239,8 @@ class GroupAgent:
             try:
                 answer = await self.llm.complete(messages, TOOLS)
             except LLMError as e:
-                logger.warning("LLM unavailable, will retry on the next message: %s", e)
+                logger.warning("LLM unavailable, will retry in %d s: %s", LLM_RETRY_SECONDS, e)
+                self._schedule(chat, LLM_RETRY_SECONDS)
                 return
             calls = answer.get("tool_calls") or []
             if not calls:

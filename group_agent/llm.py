@@ -4,11 +4,14 @@ Together, vLLM, Ollama, LM Studio, ...), with tool (function) calling.
 
 Configured with LLM_BASE_URL (e.g. https://api.deepseek.com/v1), LLM_API_KEY and
 LLM_MODEL. Without them, StubLLM is used so the WhatsApp side can be tested first.
+With LLM_FALLBACK_API_KEY set, FallbackLLM answers from a second model (Gemini by
+default) whenever the main one fails.
 """
 
 import json
 import logging
 import re
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -175,10 +178,42 @@ class StubLLM:
         }]}
 
 
+class FallbackLLM:
+    """The main model, with a second one answering whenever it fails. After a failure the main
+    model is skipped for `retry_after` seconds, so an outage doesn't add a timeout to every decision."""
+
+    def __init__(self, primary: ChatLLM, fallback: ChatLLM, retry_after: float = 300):
+        self.primary = primary
+        self.fallback = fallback
+        self.retry_after = retry_after
+        self._primary_down_until = 0.0
+
+    @property
+    def name(self) -> str:
+        return f"{self.primary.name}, fallback {self.fallback.name}"
+
+    async def complete(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if time.time() >= self._primary_down_until:
+            try:
+                return await self.primary.complete(messages, tools)
+            except LLMError as e:
+                self._primary_down_until = time.time() + self.retry_after
+                logger.warning("Main LLM failed, using the fallback (%s) for the next %d min: %s",
+                               self.fallback.model, self.retry_after // 60, e)
+        return await self.fallback.complete(messages, tools)
+
+
 def build_llm(settings) -> Any:
-    if settings.llm_configured:
-        return ChatLLM(
-            settings.llm_base_url, settings.llm_api_key, settings.llm_model,
-            settings.llm_temperature, settings.llm_timeout, settings.llm_tool_mode,
+    if not settings.llm_configured:
+        return StubLLM(settings.assistant_name)
+    llm = ChatLLM(
+        settings.llm_base_url, settings.llm_api_key, settings.llm_model,
+        settings.llm_temperature, settings.llm_timeout, settings.llm_tool_mode,
+    )
+    if settings.llm_fallback_configured:
+        fallback = ChatLLM(
+            settings.llm_fallback_base_url, settings.llm_fallback_api_key, settings.llm_fallback_model,
+            settings.llm_temperature, settings.llm_timeout, "tools",
         )
-    return StubLLM(settings.assistant_name)
+        return FallbackLLM(llm, fallback)
+    return llm

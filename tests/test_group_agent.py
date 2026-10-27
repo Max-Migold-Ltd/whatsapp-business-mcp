@@ -29,7 +29,8 @@ def env(monkeypatch, tmp_path):
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
-    for key in ("DATABASE_URL", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "AGENT_WHATSAPP_NUMBER",
+    for key in ("DATABASE_URL", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_FALLBACK_API_KEY",
+                "LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_MODEL", "AGENT_WHATSAPP_NUMBER",
                 "SHAREPOINT_TENANT_ID", "SHAREPOINT_FILE_URL"):
         monkeypatch.delenv(key, raising=False)
     return values
@@ -221,6 +222,73 @@ def test_llm_failure_is_retried_on_next_message(client, sent):
     post(client, event("M1", "First message"))
     post(client, event("M2", "Second message"))
     assert calls["n"] == 2
+
+
+def test_llm_failure_is_retried_without_a_new_message(client, sent, monkeypatch):
+    from group_agent import agent as agent_module
+    from group_agent.llm import LLMError
+
+    monkeypatch.setattr(agent_module, "LLM_RETRY_SECONDS", 0.05)
+    calls = {"n": 0}
+
+    async def flaky(messages, tools):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LLMError("Olares connection error")
+        return {"content": None, "tool_calls": []}
+
+    agent(client).llm.complete = flaky
+    post(client, event("M1", "The ceiling panel in my bedroom is open"))
+
+    async def wait():
+        for _ in range(100):
+            if calls["n"] >= 2:
+                return
+            await asyncio.sleep(0.01)
+
+    client.portal.call(wait)
+    assert calls["n"] == 2
+
+
+def test_fallback_llm_answers_when_the_main_one_fails(monkeypatch):
+    from group_agent.llm import ChatLLM, FallbackLLM
+
+    urls = []
+
+    def handler(request):
+        urls.append(str(request.url))
+        if "olares" in str(request.url):
+            return httpx.Response(530, text="Olares connection error")
+        assert request.headers["authorization"] == "Bearer gemini-key"
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None,
+            "tool_calls": [{"id": "c1", "type": "function", "function": {
+                "name": "log_issue", "arguments": '{"message_id": "M1", "summary": "x", "service_area": "Civil Work"}'}}]}}]})
+
+    _vllm(monkeypatch, handler)
+    llm = FallbackLLM(ChatLLM("https://vllm.olares.com/v1", None, "gemma"),
+                      ChatLLM("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-key", "gemini-flash-latest"))
+    conversation = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    answer = asyncio.run(llm.complete(conversation, _reply_tools()))
+    assert answer["tool_calls"][0]["function"]["name"] == "log_issue"
+    asyncio.run(llm.complete(conversation, _reply_tools()))  # main model skipped for a while after failing
+    assert [("olares" in u) for u in urls] == [True, False, False]
+    assert urls[1] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
+
+def test_fallback_settings(monkeypatch):
+    from group_agent.config import GroupAgentSettings
+    from group_agent.llm import ChatLLM, FallbackLLM, build_llm
+
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm:8000")
+    monkeypatch.setenv("LLM_MODEL", "gemma")
+    for key in ("LLM_FALLBACK_API_KEY", "LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    assert isinstance(build_llm(GroupAgentSettings.from_env()), ChatLLM)  # no key: no fallback
+    monkeypatch.setenv("LLM_FALLBACK_API_KEY", "gemini-key")
+    llm = build_llm(GroupAgentSettings.from_env())
+    assert isinstance(llm, FallbackLLM)
+    assert llm.fallback.url == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert llm.fallback.model == "gemini-flash-latest"
 
 
 def test_messages_from_before_a_restart_are_not_answered(env, sent):
