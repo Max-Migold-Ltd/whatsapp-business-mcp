@@ -84,8 +84,8 @@ feedback, closed). The agent creates the sheet the first time it has an issue to
    LLM_BASE_URL=https://api.your-provider.com/v1
    LLM_API_KEY=<key>
    LLM_MODEL=<model name>
-   LLM_FALLBACK_API_KEY=<Gemini API key>   # optional, see "Fallback models" below
-   OPENAI_API_KEY=<OpenAI API key>         # optional
+   OPENAI_API_KEY=<OpenAI API key>         # optional backup model, see "Fallback models" below
+   LLM_FALLBACK_API_KEY=<Gemini API key>   # optional
    ```
 3. **Deploy**, then link the phone - either:
    - **Code:** `POST /api/v1/group-agent/pair` with `{"phone": "2348012345678"}` (header `X-API-Key`) returns an

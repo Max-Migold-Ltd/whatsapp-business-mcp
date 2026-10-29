@@ -26,7 +26,7 @@ Max-Migold's automated assistant ("Max Migold Assistant") is a member of the Wha
 
 - **What it records:** the name shown on your WhatsApp account, your phone number, the messages posted in the group with their dates and times, the requests you raise, and the 0-10 rating and comment you give when a job is finished.
 - **Why:** to give each request a reference, make sure our staff respond to it, follow it up until it is done, and measure the quality of our service.
-- **How it is handled:** messages are stored by our own support system and requests are recorded in our internal records on Microsoft SharePoint (Microsoft 365). To understand the messages, the assistant uses an artificial intelligence (AI) model run on our own server; if that is unavailable, a backup AI service from Google (Gemini) or OpenAI is used. Only names and message text are sent to the AI model, never phone numbers. *(Max-Migold to confirm: on Google's free tier, Google may use the messages it receives to improve its products; a paid Gemini account avoids this.)*
+- **How it is handled:** messages are stored by our own support system and requests are recorded in our internal records on Microsoft SharePoint (Microsoft 365). To understand the messages, the assistant uses an artificial intelligence (AI) model run on our own server; if that is unavailable, a backup AI service from OpenAI is used, which does not use the messages for training. Only names and message text are sent to the AI model, never phone numbers.
 - The assistant is an AI, not a person. Your requests are handled by Max-Migold staff.
 
 ---
