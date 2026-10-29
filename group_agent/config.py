@@ -93,6 +93,7 @@ class GroupAgentSettings:
     followup_hours: float     # in progress this long without being done -> private follow-up to that staff member
     followup_repeat_hours: float
     followup_max: int
+    private_alerts_all_groups: bool  # escalations/follow-ups also for observed groups (private messages to staff)
     staff_table: str
 
     # Pacing
@@ -140,6 +141,7 @@ class GroupAgentSettings:
             followup_hours=float(os.getenv("GROUP_FOLLOWUP_HOURS", "48")),
             followup_repeat_hours=float(os.getenv("GROUP_FOLLOWUP_REPEAT_HOURS", "24")),
             followup_max=int(os.getenv("GROUP_FOLLOWUP_MAX", "3")),
+            private_alerts_all_groups=os.getenv("GROUP_PRIVATE_ALERTS", "all").strip().lower() != "reply",
             staff_table=os.getenv("GROUP_STAFF_TABLE", "Staff"),
             history_size=int(os.getenv("GROUP_AGENT_HISTORY", "30")),
             debounce_seconds=float(os.getenv("GROUP_AGENT_DEBOUNCE_SECONDS", "6")),

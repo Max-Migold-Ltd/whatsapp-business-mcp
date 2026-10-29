@@ -37,6 +37,8 @@ Resident rates ──────▶ Closed, score recorded for NPS   (no rating
   Safety nets: a staff reply quoting the resident's report counts as a response, and so does any staff message
   in the group before a reminder or a delayed acknowledgement is due; a bare "8" or "8/10" from the resident
   counts as their rating.
+- In a group that is only observed, nothing is posted in the group (no acknowledgement, reminder or rating
+  question), but staff still get the private escalation at 60 minutes and the private follow-ups.
 - The CEO ("Observer" in the Staff sheet) is never @mentioned or messaged automatically.
 
 **Staff list:** the `Staff` sheet of the Complaints Log (Name, WhatsApp Number, Role, Escalation, Notes),
@@ -69,7 +71,8 @@ feedback, closed). The agent creates the sheet the first time it has an issue to
 | `GROUP_AGENT_ENABLED=false` | Off entirely; the bridge is not started |
 | `GROUP_AGENT_MODE=listen` | Reads and stores every message, no LLM, **never sends** |
 | `GROUP_AGENT_MODE=observe` | Logs and tracks issues in every group (Group Issues sheet), **never sends** |
-| `GROUP_AGENT_MODE=reply` + `GROUP_AGENT_REPLY_CHATS=Test group` | Full agent in the listed groups (names or ids; `*` = all); every other group is observed |
+| `GROUP_AGENT_MODE=reply` + `GROUP_AGENT_REPLY_CHATS=Test group` | Full agent in the listed groups (names or ids; `*` = all); every other group is observed, but its issues still get the **private** escalation and follow-ups to staff |
+| `GROUP_PRIVATE_ALERTS=reply` | Private escalations and follow-ups only for the listed groups (default `all`) |
 | `LLM_BASE_URL` empty | Test mode: replies only when someone writes "assistant", with a fixed message |
 
 ## Setup

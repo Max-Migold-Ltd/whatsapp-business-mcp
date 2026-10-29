@@ -451,6 +451,9 @@ class GroupAgent:
     async def _issue_timers(self, issue: Dict[str, Any], now: int) -> None:
         s = self.settings
         can_send = self.may_send(issue["chat_id"], issue["chat_name"])
+        # Private messages to staff (escalations, follow-ups) go out for every group unless GROUP_PRIVATE_ALERTS=reply;
+        # residents see nothing new in a group that is only observed
+        can_alert = s.mode == MODE_REPLY and (can_send or s.private_alerts_all_groups)
         waiting = now - issue["opened_at"]
 
         if issue["status"] == OPEN and not issue["staff_response_at"]:
@@ -474,12 +477,12 @@ class GroupAgent:
             if issue["reminders"] == 0 and waiting >= s.reminder_minutes * 60 and can_send:
                 await self._send_reminder(issue, waiting)
                 self.store.update_issue(issue["ref"], reminders=1, reminded_at=now)
-            elif (issue["reminders"] >= 1 and not issue["escalated_at"]
-                  and waiting >= s.escalate_minutes * 60 and s.mode == MODE_REPLY):
+            elif ((issue["reminders"] >= 1 or not can_send) and not issue["escalated_at"]
+                  and waiting >= s.escalate_minutes * 60 and can_alert):
                 await self._send_escalation(issue, waiting)
                 self.store.update_issue(issue["ref"], escalated_at=now)
 
-        if issue["status"] == IN_PROGRESS and can_send and (issue.get("followups") or 0) < s.followup_max:
+        if issue["status"] == IN_PROGRESS and can_alert and (issue.get("followups") or 0) < s.followup_max:
             started = issue["staff_response_at"] or issue["opened_at"]
             due = (issue["followed_up_at"] + s.followup_repeat_hours * 3600 if issue.get("followed_up_at")
                    else started + s.followup_hours * 3600)
@@ -507,7 +510,8 @@ class GroupAgent:
         opened = _local(issue["opened_at"], self.tz)
         text = (f"Escalation from {self.settings.assistant_name}: {issue['ref']} in \"{issue['chat_name'] or 'a group'}\" - "
                 f"{issue['resident_name'] or 'a resident'} reported \"{issue['summary']}\" at {opened}, "
-                f"and no staff member has responded after {_minutes(waiting)}, even after a reminder in the group.")
+                f"and no staff member has responded after {_minutes(waiting)}"
+                f"{', even after a reminder in the group' if issue['reminders'] else ''}.")
         for member in self.staff.by_escalation(ESCALATE_TO):
             await self._send(member.jid, None, text)
         logger.info("Escalated %s to %d person(s)", issue["ref"], len(self.staff.by_escalation(ESCALATE_TO)))

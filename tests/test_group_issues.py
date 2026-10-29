@@ -273,9 +273,50 @@ def test_other_groups_are_observed_not_spoken_in(world):
     assert issue["chat_name"] == "Lagoon Building 2" and issue["status"] == "Open"
     assert issue["acknowledged_at"] is None  # nothing was actually sent
     assert bridge.sent == []
-    asyncio.run(agent.run_timers(now=issue["opened_at"] + 3 * 3600))
-    assert bridge.sent == []  # no reminders or escalations from an observed group
+    asyncio.run(agent.run_timers(now=issue["opened_at"] + 59 * 60))
+    assert bridge.sent == []  # no reminder in an observed group
+    asyncio.run(agent.run_timers(now=issue["opened_at"] + 61 * 60))
+    assert [s["chat"] for s in bridge.sent] == ["2348033333333@s.whatsapp.net"]  # only the private escalation
+    assert "Lagoon Building 2" in bridge.sent[0]["text"] and "reminder" not in bridge.sent[0]["text"]
+    asyncio.run(agent.run_timers(now=issue["opened_at"] + 5 * 3600))
+    assert len(bridge.sent) == 1  # once only
     assert "observing this group" in llm.prompts[-1]
+
+
+def test_observed_group_follow_up_is_private(world):
+    agent, store, bridge, llm = world
+    other = "120363000000000010@g.us"
+    llm.then(("log_issue", {"message_id": "X1", "summary": "Gate broken", "service_area": "Security"}))
+    msg(agent, "X1", "The gate is broken", chat=other, chat_name="Lagoon Building 2")
+    llm.then(("update_issue", {"ref": "MMF-G00001", "status": "in_progress"}))
+    msg(agent, "S1", "I will get back to you on this", sender=TUNDE, name="Tunde", chat=other, chat_name="Lagoon Building 2")
+    started = store.get_issue("MMF-G00001")["staff_response_at"]
+    asyncio.run(agent.run_timers(now=started + 49 * 3600))
+    assert [s["chat"] for s in bridge.sent] == ["2348031111111@s.whatsapp.net"]  # to Tunde, privately
+    assert "Follow-up" in bridge.sent[0]["text"]
+
+
+def test_private_alerts_can_be_limited_to_reply_groups(world, monkeypatch):
+    import dataclasses
+
+    agent, store, bridge, llm = world
+    agent.settings = dataclasses.replace(agent.settings, private_alerts_all_groups=False)
+    other = "120363000000000010@g.us"
+    llm.then(("log_issue", {"message_id": "X1", "summary": "Gate broken", "service_area": "Security"}))
+    msg(agent, "X1", "The gate is broken", chat=other, chat_name="Lagoon Building 2")
+    asyncio.run(agent.run_timers(now=store.list_issues()[0]["opened_at"] + 3 * 3600))
+    assert bridge.sent == []
+
+
+def test_observe_mode_never_sends_private_alerts(world):
+    import dataclasses
+
+    agent, store, bridge, llm = world
+    agent.settings = dataclasses.replace(agent.settings, mode="observe")
+    llm.then(("log_issue", {"message_id": "X1", "summary": "Gate broken", "service_area": "Security"}))
+    msg(agent, "X1", "The gate is broken")
+    asyncio.run(agent.run_timers(now=store.list_issues()[0]["opened_at"] + 3 * 3600))
+    assert bridge.sent == []
 
 
 # ================================
