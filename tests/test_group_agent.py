@@ -30,7 +30,8 @@ def env(monkeypatch, tmp_path):
     for key, value in values.items():
         monkeypatch.setenv(key, value)
     for key in ("DATABASE_URL", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_FALLBACK_API_KEY",
-                "LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_MODEL", "AGENT_WHATSAPP_NUMBER",
+                "LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_MODEL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                "OPENAI_FALLBACK_MODEL", "AGENT_WHATSAPP_NUMBER",
                 "SHAREPOINT_TENANT_ID", "SHAREPOINT_FILE_URL"):
         monkeypatch.delenv(key, raising=False)
     return values
@@ -266,7 +267,7 @@ def test_fallback_llm_answers_when_the_main_one_fails(monkeypatch):
 
     _vllm(monkeypatch, handler)
     llm = FallbackLLM(ChatLLM("https://vllm.olares.com/v1", None, "gemma"),
-                      ChatLLM("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-key", "gemini-flash-latest"))
+                      [ChatLLM("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-key", "gemini-flash-latest")])
     conversation = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
     answer = asyncio.run(llm.complete(conversation, _reply_tools()))
     assert answer["tool_calls"][0]["function"]["name"] == "log_issue"
@@ -281,14 +282,55 @@ def test_fallback_settings(monkeypatch):
 
     monkeypatch.setenv("LLM_BASE_URL", "http://vllm:8000")
     monkeypatch.setenv("LLM_MODEL", "gemma")
-    for key in ("LLM_FALLBACK_API_KEY", "LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_MODEL"):
+    for key in ("LLM_FALLBACK_API_KEY", "LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_MODEL",
+                "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_FALLBACK_MODEL"):
         monkeypatch.delenv(key, raising=False)
     assert isinstance(build_llm(GroupAgentSettings.from_env()), ChatLLM)  # no key: no fallback
     monkeypatch.setenv("LLM_FALLBACK_API_KEY", "gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     llm = build_llm(GroupAgentSettings.from_env())
     assert isinstance(llm, FallbackLLM)
-    assert llm.fallback.url == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    assert llm.fallback.model == "gemini-flash-latest"
+    gemini = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert [(f.url, f.model, f.api_key) for f in llm.fallbacks] == [
+        (gemini, "gemini-flash-lite-latest", "gemini-key"), (gemini, "gemini-flash-latest", "gemini-key"),
+        ("https://api.openai.com/v1/chat/completions", "gpt-5-mini", "openai-key"),
+    ]
+    assert llm.fallbacks[0].temperature == 0.3 and llm.fallbacks[2].temperature is None  # GPT-5 takes no temperature
+
+
+def test_each_fallback_is_tried_in_turn(monkeypatch):
+    from group_agent.llm import ChatLLM, FallbackLLM
+
+    seen = []
+    state = {"all_down": False}
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append((request.url.host, body["model"], "temperature" in body))
+        if state["all_down"]:
+            return httpx.Response(530, text="down")
+        if request.url.host != "api.openai.com":
+            return httpx.Response(503, text="This model is currently experiencing high demand")
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None}}]})
+
+    _vllm(monkeypatch, handler)
+    gemini = "https://generativelanguage.googleapis.com/v1beta/openai"
+    llm = FallbackLLM(ChatLLM("https://vllm.olares.com/v1", None, "gemma"), [
+        ChatLLM(gemini, "g", "gemini-flash-lite-latest"), ChatLLM(gemini, "g", "gemini-flash-latest"),
+        ChatLLM("https://api.openai.com/v1", "o", "gpt-5-mini", temperature=None)])
+    conversation = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    asyncio.run(llm.complete(conversation, _reply_tools()))
+    assert [m for _, m, _ in seen] == ["gemma", "gemini-flash-lite-latest", "gemini-flash-latest", "gpt-5-mini"]
+    assert seen[-1] == ("api.openai.com", "gpt-5-mini", False)
+    seen.clear()
+    asyncio.run(llm.complete(conversation, _reply_tools()))  # failed ones rest: OpenAI is tried first
+    assert [m for _, m, _ in seen] == ["gpt-5-mini"]
+    seen.clear()
+
+    state["all_down"] = True
+    with pytest.raises(Exception, match="530"):
+        asyncio.run(llm.complete(conversation, _reply_tools()))
+    assert len(seen) == 4  # every model was still tried
 
 
 def test_messages_from_before_a_restart_are_not_answered(env, sent):

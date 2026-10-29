@@ -16,7 +16,17 @@ MODES = (MODE_LISTEN, MODE_OBSERVE, MODE_REPLY)
 
 # Gemini's OpenAI-compatible API; "-latest" follows Google's current (free tier) Flash model
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-flash-lite-latest,gemini-flash-latest"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_MODEL = "gpt-5-mini"
+
+
+@dataclass(frozen=True)
+class FallbackModel:
+    base_url: str
+    api_key: str
+    model: str
+    temperature: bool = True  # False: the API only takes its default (OpenAI's GPT-5 models)
 
 
 def _flag(name: str, default: str = "false") -> bool:
@@ -33,6 +43,24 @@ def _api_base(url: str) -> Optional[str]:
     if urlparse(url).path in ("", "/"):
         url += "/v1"
     return url
+
+
+def _fallbacks() -> Tuple[FallbackModel, ...]:
+    """LLM_FALLBACK_* (Gemini by default), then OPENAI_*; a comma-separated model list = one fallback per model."""
+    found = []
+    sources = [
+        ("LLM_FALLBACK_API_KEY", "LLM_FALLBACK_BASE_URL", GEMINI_BASE_URL, "LLM_FALLBACK_MODEL", GEMINI_MODEL, True),
+        ("OPENAI_API_KEY", "OPENAI_BASE_URL", OPENAI_BASE_URL, "OPENAI_FALLBACK_MODEL", OPENAI_MODEL, False),
+    ]
+    for key_var, url_var, url, model_var, models, temperature in sources:
+        key = os.getenv(key_var)
+        if not key:
+            continue
+        base = _api_base(os.getenv(url_var) or url)
+        for model in (os.getenv(model_var) or models).split(","):
+            if model.strip():
+                found.append(FallbackModel(base, key, model.strip(), temperature))
+    return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -54,10 +82,8 @@ class GroupAgentSettings:
     llm_temperature: float
     llm_timeout: float
     llm_tool_mode: str  # auto | tools | json
-    # Second model used whenever the main one fails (Gemini by default); off without an API key
-    llm_fallback_base_url: Optional[str]
-    llm_fallback_api_key: Optional[str]
-    llm_fallback_model: Optional[str]
+    # Models tried in order whenever the main one fails: Gemini, then OpenAI (each off without its API key)
+    llm_fallbacks: Tuple[FallbackModel, ...]
 
     # Issue follow-up timers
     reminder_minutes: float   # no staff response -> @mention first-contact staff in the group
@@ -84,7 +110,7 @@ class GroupAgentSettings:
 
     @property
     def llm_fallback_configured(self) -> bool:
-        return bool(self.llm_configured and self.llm_fallback_api_key and self.llm_fallback_model)
+        return bool(self.llm_configured and self.llm_fallbacks)
 
     @classmethod
     def from_env(cls) -> "GroupAgentSettings":
@@ -106,9 +132,7 @@ class GroupAgentSettings:
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
             llm_timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "60")),
             llm_tool_mode=os.getenv("LLM_TOOL_MODE", "auto").strip().lower(),
-            llm_fallback_base_url=_api_base(os.getenv("LLM_FALLBACK_BASE_URL") or GEMINI_BASE_URL),
-            llm_fallback_api_key=os.getenv("LLM_FALLBACK_API_KEY") or None,
-            llm_fallback_model=os.getenv("LLM_FALLBACK_MODEL") or GEMINI_MODEL,
+            llm_fallbacks=_fallbacks(),
             reminder_minutes=float(os.getenv("GROUP_REMINDER_MINUTES", "30")),
             escalate_minutes=float(os.getenv("GROUP_ESCALATE_MINUTES", "60")),
             feedback_hours=float(os.getenv("GROUP_FEEDBACK_HOURS", "24")),

@@ -1,8 +1,8 @@
 # WhatsApp Group Agent
 
 A dedicated WhatsApp number joins residents' groups as **Max Migold Assistant**. It reads every
-message and, using an LLM you choose (any OpenAI-compatible API, with an optional fallback model such as
-Gemini for when it is down), replies when needed.
+message and, using an LLM you choose (any OpenAI-compatible API, with optional fallback models - Gemini
+and OpenAI - for when it is down), replies when needed.
 
 ```
 Residents' groups ──▶ dedicated phone number, linked like WhatsApp Web
@@ -84,7 +84,8 @@ feedback, closed). The agent creates the sheet the first time it has an issue to
    LLM_BASE_URL=https://api.your-provider.com/v1
    LLM_API_KEY=<key>
    LLM_MODEL=<model name>
-   LLM_FALLBACK_API_KEY=<Gemini API key>   # optional, see "Fallback model" below
+   LLM_FALLBACK_API_KEY=<Gemini API key>   # optional, see "Fallback models" below
+   OPENAI_API_KEY=<OpenAI API key>         # optional
    ```
 3. **Deploy**, then link the phone - either:
    - **Code:** `POST /api/v1/group-agent/pair` with `{"phone": "2348012345678"}` (header `X-API-Key`) returns an
@@ -119,21 +120,27 @@ The Depot server must be able to reach the vLLM address. Check it with
 `POST /api/v1/group-agent/llm-check` (header `X-API-Key`): a dry run that sends one test conversation to the
 model and shows the reply it would give - nothing is sent to WhatsApp.
 
-## Fallback model (Gemini)
+## Fallback models (Gemini, OpenAI)
 
-If the main model fails (for example the vLLM server is down), the agent answers with a second model, and
-keeps using it for 5 minutes before trying the main one again. If both fail, it looks at the chat again every
-minute until one answers, so no complaint is missed.
+If the main model fails (for example the vLLM server is down), the agent tries the fallback models in turn:
+Gemini Flash-Lite, Gemini Flash, then OpenAI. A model that failed is tried last for the next 5 minutes, so an
+outage doesn't slow every decision. If every model fails, it looks at the chat again every minute until one
+answers, so no complaint is missed.
 
 ```
 LLM_FALLBACK_API_KEY=<Gemini API key from https://aistudio.google.com/apikey>
 # defaults: LLM_FALLBACK_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-#           LLM_FALLBACK_MODEL=gemini-flash-latest   (Google's current free tier Flash model)
+#           LLM_FALLBACK_MODEL=gemini-flash-lite-latest,gemini-flash-latest   (tried in that order)
+OPENAI_API_KEY=<OpenAI API key from https://platform.openai.com/api-keys>
+# default:  OPENAI_FALLBACK_MODEL=gpt-5-mini
 ```
 
-Any OpenAI-compatible API works the same way. `POST /api/v1/group-agent/llm-check` tests both models.
-On Gemini's free tier Google may use the messages sent to improve its products; only names and message text
-are sent, never phone numbers. A paid (billing-enabled) Gemini key avoids this.
+Each is off until its key is set; either can be used alone. `POST /api/v1/group-agent/llm-check` tests
+every model. The free Gemini models are often busy ("high demand"), which is why OpenAI (paid per use, a few
+cents a day at this volume) is the last resort.
+
+Privacy: only names and message text are sent, never phone numbers. On Gemini's free tier Google may use the
+messages to improve its products (a billing-enabled key avoids this); OpenAI does not train on API data.
 
 ## Endpoints (all need `X-API-Key`)
 

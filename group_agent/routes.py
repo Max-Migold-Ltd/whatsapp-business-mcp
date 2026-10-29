@@ -76,7 +76,7 @@ async def llm_check(service: GroupAgentService = Depends(get_service)):
     if not service.settings.llm_configured:
         return {"ok": False, "llm": llm.name, "detail": "No LLM configured: set LLM_BASE_URL and LLM_MODEL"}
     if isinstance(llm, FallbackLLM):
-        return {**await _check(service, llm.primary), "fallback": await _check(service, llm.fallback)}
+        return {**await _check(service, llm.primary), "fallbacks": [await _check(service, f) for f in llm.fallbacks]}
     return await _check(service, llm)
 
 

@@ -4,8 +4,8 @@ Together, vLLM, Ollama, LM Studio, ...), with tool (function) calling.
 
 Configured with LLM_BASE_URL (e.g. https://api.deepseek.com/v1), LLM_API_KEY and
 LLM_MODEL. Without them, StubLLM is used so the WhatsApp side can be tested first.
-With LLM_FALLBACK_API_KEY set, FallbackLLM answers from a second model (Gemini by
-default) whenever the main one fails.
+With LLM_FALLBACK_API_KEY (Gemini) and/or OPENAI_API_KEY set, FallbackLLM tries those
+models in turn whenever the main one fails.
 """
 
 import json
@@ -40,7 +40,7 @@ class ChatLLM:
     for good if the server refuses tool calling."""
 
     def __init__(
-        self, base_url: str, api_key: Optional[str], model: str, temperature: float = 0.3,
+        self, base_url: str, api_key: Optional[str], model: str, temperature: Optional[float] = 0.3,
         timeout: float = 60, tool_mode: str = "auto",
     ):
         if tool_mode not in TOOL_MODES:
@@ -74,7 +74,9 @@ class ChatLLM:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        body: Dict[str, Any] = {"model": self.model, "messages": messages, "temperature": self.temperature}
+        body: Dict[str, Any] = {"model": self.model, "messages": messages}
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
@@ -179,28 +181,35 @@ class StubLLM:
 
 
 class FallbackLLM:
-    """The main model, with a second one answering whenever it fails. After a failure the main
-    model is skipped for `retry_after` seconds, so an outage doesn't add a timeout to every decision."""
+    """The main model, then each fallback in turn until one answers. A model that failed goes to the
+    back of the queue for `retry_after` seconds, so an outage doesn't add a timeout to every decision."""
 
-    def __init__(self, primary: ChatLLM, fallback: ChatLLM, retry_after: float = 300):
+    def __init__(self, primary: ChatLLM, fallbacks: List[ChatLLM], retry_after: float = 300):
         self.primary = primary
-        self.fallback = fallback
+        self.fallbacks = list(fallbacks)
         self.retry_after = retry_after
-        self._primary_down_until = 0.0
+        self._down_until: Dict[int, float] = {}
 
     @property
     def name(self) -> str:
-        return f"{self.primary.name}, fallback {self.fallback.name}"
+        return f"{self.primary.name}, fallback {', '.join(f.model for f in self.fallbacks)}"
 
     async def complete(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if time.time() >= self._primary_down_until:
+        models = [self.primary] + self.fallbacks
+        now = time.time()
+        order = sorted(range(len(models)), key=lambda i: self._down_until.get(i, 0) > now)  # stable: resting ones last
+        error: Optional[LLMError] = None
+        for i in order:
             try:
-                return await self.primary.complete(messages, tools)
+                answer = await models[i].complete(messages, tools)
             except LLMError as e:
-                self._primary_down_until = time.time() + self.retry_after
-                logger.warning("Main LLM failed, using the fallback (%s) for the next %d min: %s",
-                               self.fallback.model, self.retry_after // 60, e)
-        return await self.fallback.complete(messages, tools)
+                self._down_until[i] = time.time() + self.retry_after
+                logger.warning("LLM %s failed, trying the next one: %s", models[i].model, e)
+                error = e
+                continue
+            self._down_until.pop(i, None)
+            return answer
+        raise error
 
 
 def build_llm(settings) -> Any:
@@ -211,9 +220,9 @@ def build_llm(settings) -> Any:
         settings.llm_temperature, settings.llm_timeout, settings.llm_tool_mode,
     )
     if settings.llm_fallback_configured:
-        fallback = ChatLLM(
-            settings.llm_fallback_base_url, settings.llm_fallback_api_key, settings.llm_fallback_model,
-            settings.llm_temperature, settings.llm_timeout, "tools",
-        )
-        return FallbackLLM(llm, fallback)
+        return FallbackLLM(llm, [
+            ChatLLM(f.base_url, f.api_key, f.model, settings.llm_temperature if f.temperature else None,
+                    settings.llm_timeout, "tools")
+            for f in settings.llm_fallbacks
+        ])
     return llm

@@ -10,7 +10,7 @@ A security-hardened [Model Context Protocol (MCP)](https://modelcontextprotocol.
 - **Two transport modes** — stdio (for MCP clients like Claude Desktop) and HTTP (for REST API access)
 - **Production-ready** — CORS controls, security headers, configurable via environment variables
 - **Customer support bot** — intake questionnaire with handoff to a human agent in the WhatsApp Business app, conversations and tickets logged to SharePoint Excel. See [SUPPORT_BOT.md](SUPPORT_BOT.md); deployment: [DEPLOY.md](DEPLOY.md)
-- **WhatsApp group agent** (optional) — a dedicated number in residents' WhatsApp groups that logs each issue, reminds staff, asks for a 0-10 rating when the job is done and records it all in SharePoint Excel; runs on a self-hosted or hosted LLM, with a fallback model (Gemini) if the main one fails. It connects as a linked device, which WhatsApp does not officially permit. See [GROUP_AGENT.md](GROUP_AGENT.md)
+- **WhatsApp group agent** (optional) — a dedicated number in residents' WhatsApp groups that logs each issue, reminds staff, asks for a 0-10 rating when the job is done and records it all in SharePoint Excel; runs on a self-hosted or hosted LLM, with fallback models (Gemini, OpenAI) if the main one fails. It connects as a linked device, which WhatsApp does not officially permit. See [GROUP_AGENT.md](GROUP_AGENT.md)
 
 ## Tools Overview
 
