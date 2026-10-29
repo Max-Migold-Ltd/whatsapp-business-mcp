@@ -142,6 +142,17 @@ cents a day at this volume) is the last resort.
 Privacy: only names and message text are sent, never phone numbers. On Gemini's free tier Google may use the
 messages to improve its products (a billing-enabled key avoids this); OpenAI does not train on API data.
 
+## Outages: no message is lost
+
+- **The app or the server is down:** WhatsApp keeps the messages for the linked device and delivers them when it
+  reconnects. The bridge forwards those (up to 3 days old) and retries for about 5 minutes if the app is still
+  starting. They are handled like any new message, so a complaint is logged and acknowledged late, not missed.
+- **No model answers:** messages are stored and looked at again every minute until a model answers.
+- **To go back over a period** (for example messages stored before these safeguards existed):
+  `POST /api/v1/group-agent/catch-up` with `{"since": "2026-10-27T09:00"}` (Lagos time). The agent reads every
+  group's messages since then and logs their issues, staff updates and ratings, dated when they were written.
+  It sends nothing to WhatsApp; from then on the issues are followed up as usual (reminders in reply groups).
+
 ## Endpoints (all need `X-API-Key`)
 
 | Endpoint | Returns |
@@ -153,3 +164,4 @@ messages to improve its products (a billing-enabled key avoids this); OpenAI doe
 | `GET /api/v1/group-agent/groups` | Groups the number is in, with member counts |
 | `GET /api/v1/group-agent/issues` | Issues with their status, timings and scores |
 | `GET /api/v1/group-agent/messages?chat=<id>` | Stored messages, newest first |
+| `POST /api/v1/group-agent/catch-up` | Log the issues in messages stored since a time, sending nothing |

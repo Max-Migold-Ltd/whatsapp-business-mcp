@@ -28,6 +28,7 @@ import { usePostgresAuthState } from './pg-auth.js'
 const PORT = Number(process.env.BRIDGE_PORT || 3100)
 const HOST = process.env.BRIDGE_HOST || '127.0.0.1'
 const SECRET = process.env.BRIDGE_SECRET || ''
+const OFFLINE_MAX_AGE_DAYS = 3 // forward messages missed while disconnected, up to this old
 const AGENT_URL = process.env.AGENT_EVENTS_URL || 'http://127.0.0.1:3000/group-agent/events'
 const AUTH_DIR = process.env.BRIDGE_AUTH_DIR || './wa_auth'
 // With DATABASE_URL (PostgreSQL) the session is kept in the database and survives redeploys
@@ -122,10 +123,17 @@ async function connect() {
   })
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return // skip history sync, only live messages
+    // "notify" = live; "append" = sent while we were disconnected, delivered on reconnect
+    // (only the last few days - never a full history sync)
+    const oldest = Date.now() / 1000 - OFFLINE_MAX_AGE_DAYS * 86400
     for (const msg of messages) {
       const event = await toEvent(msg)
-      if (event) forward(event)
+      if (!event) continue
+      if (type === 'append') {
+        if (event.timestamp < oldest) continue
+        event.offline = true
+      } else if (type !== 'notify') continue
+      forward(event)
     }
   })
 }
@@ -199,17 +207,25 @@ function isMe(jid) {
   return Boolean(jid) && [sock?.user?.id, sock?.user?.lid].some((id) => id && user(id) === user(jid))
 }
 
-async function forward(event) {
+// Retries for about 5 minutes, so messages arriving while the app (re)starts aren't lost
+async function forward(event, attempt = 1) {
+  let problem
   try {
     const res = await fetch(AGENT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Bridge-Secret': SECRET },
       body: JSON.stringify(event),
     })
-    if (!res.ok) log('Agent rejected event', event.id, res.status)
+    if (res.ok) return
+    if (res.status < 500) return log('Agent rejected event', event.id, res.status)
+    problem = `status ${res.status}`
   } catch (e) {
-    log('Agent unreachable:', e.message)
+    problem = e.message
   }
+  if (attempt >= 20) return log('Agent unreachable, gave up on event', event.id, problem)
+  if (attempt === 1) log('Agent unreachable, will retry:', problem)
+  await sleep(Math.min(5000 * attempt, 30000))
+  return forward(event, attempt + 1)
 }
 
 // ---------- HTTP API for the agent ----------

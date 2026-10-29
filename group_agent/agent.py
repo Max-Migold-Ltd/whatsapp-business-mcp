@@ -214,14 +214,34 @@ class GroupAgent:
             except Exception:
                 logger.exception("Group agent failed while processing chat %s", chat)
 
-    async def _decide(self, chat: str) -> None:
-        history = self.store.recent(chat, self.settings.history_size)
-        seen = self._seen.get(chat, self._start_id)
+    async def catch_up(self, since: int) -> List[Dict[str, Any]]:
+        """Go back over messages stored since `since` (e.g. while no model was answering, or before a
+        restart): log their issues and staff updates, without sending anything."""
+        results = []
+        for chat in self.store.chats():
+            row = self.store.db.one("SELECT MIN(id) AS id FROM group_messages WHERE chat_id = ? AND ts >= ?",
+                                    (chat["chat_id"], since))
+            if not row or not row["id"]:
+                continue
+            async with self._locks[chat["chat_id"]]:
+                decision = await self._decide(chat["chat_id"], seen=row["id"] - 1, catching_up=True)
+            if decision is not None:
+                results.append({"chat": chat["chat_name"] or chat["chat_id"], "messages": len(decision["new"]),
+                                "logged": decision["created"], "error": decision.get("error")})
+        return results
+
+    async def _decide(self, chat: str, seen: Optional[int] = None, catching_up: bool = False) -> Optional[Dict[str, Any]]:
+        if catching_up:  # the window may be longer than the usual history
+            row = self.store.db.one("SELECT COUNT(*) AS n FROM group_messages WHERE chat_id = ? AND id > ?", (chat, seen))
+            history = self.store.recent(chat, max(self.settings.history_size, (row["n"] if row else 0) + 10))
+        else:
+            history = self.store.recent(chat, self.settings.history_size)
+            seen = self._seen.get(chat, self._start_id)
         new = [m for m in history if m["id"] > seen and not m["from_me"]]
         if not new:
-            return
+            return None
         chat_name = next((m["chat_name"] for m in reversed(history) if m["chat_name"]), None)
-        can_send = self.may_send(chat, chat_name)
+        can_send = self.may_send(chat, chat_name) and not catching_up
 
         last_reply = self.store.last_reply_at(chat)
         wait = (last_reply or 0) + self.settings.min_reply_gap_seconds - time.time()
@@ -233,15 +253,18 @@ class GroupAgent:
                     "new": {m["msg_id"]: m for m in new}, "created": [], "handled": set()}
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": self._transcript(chat, history, seen, can_send)},
+            {"role": "user", "content": self._transcript(chat, history, seen, can_send, catching_up)},
         ]
         for _ in range(MAX_TOOL_ROUNDS):
             try:
                 answer = await self.llm.complete(messages, TOOLS)
             except LLMError as e:
+                if catching_up:
+                    decision["error"] = str(e)
+                    return decision
                 logger.warning("LLM unavailable, will retry in %d s: %s", LLM_RETRY_SECONDS, e)
                 self._schedule(chat, LLM_RETRY_SECONDS)
-                return
+                return None
             calls = answer.get("tool_calls") or []
             if not calls:
                 break
@@ -258,10 +281,12 @@ class GroupAgent:
                 self.store.update_issue(ref, acknowledged_at=now)
         await self._deterministic_follow_ups(decision)
 
-        self._seen[chat] = max(m["id"] for m in new)
-        logger.info("Chat %s: %d new message(s), %s%s", chat_name or chat, len(new),
+        self._seen[chat] = max(self._seen.get(chat, self._start_id), max(m["id"] for m in new))
+        logger.info("Chat %s: %d %s message(s), %s%s", chat_name or chat, len(new),
+                    "caught-up" if catching_up else "new",
                     "replied" if decision["replied"] else "stayed silent",
                     f", logged {', '.join(decision['created'])}" if decision["created"] else "")
+        return decision
 
     async def _run_tool(self, call: Dict[str, Any], d: Dict[str, Any]) -> Dict[str, Any]:
         function = call.get("function") or {}
@@ -367,7 +392,7 @@ class GroupAgent:
 
         # Resolved: ask the resident for a rating, right there in the group
         self.store.update_issue(issue["ref"], status=AWAITING_FEEDBACK, resolved_at=now, resolved_by=staff_name, **fields)
-        sent = await self._send_survey(self.store.get_issue(issue["ref"]))
+        sent = d["can_send"] and await self._send_survey(self.store.get_issue(issue["ref"]))
         return {"ref": issue["ref"], "status": AWAITING_FEEDBACK,
                 "survey": "sent to the resident - do not send another message about it" if sent else "not sent (observe mode)"}
 
@@ -536,7 +561,8 @@ class GroupAgent:
     # WHAT THE LLM SEES
     # ================================
 
-    def _transcript(self, chat: str, history: List[Dict[str, Any]], seen: int, can_send: bool) -> str:
+    def _transcript(self, chat: str, history: List[Dict[str, Any]], seen: int, can_send: bool,
+                    catching_up: bool = False) -> str:
         """The chat as the LLM sees it. Names only - no phone numbers are sent to the LLM."""
         name = next((m["chat_name"] for m in reversed(history) if m["chat_name"]), None) or "this chat"
         parts = [f"WhatsApp group: {name}", ""]
@@ -557,7 +583,10 @@ class GroupAgent:
         if earlier:
             parts += ["EARLIER MESSAGES (context only, already handled):", *earlier, ""]
         parts += ["NEW MESSAGES since you last looked:", *new, ""]
-        if not can_send:
+        if catching_up:
+            parts.append("(These messages came in while you were unavailable. Record what they need with the tools - "
+                         "issues, staff updates, ratings - but don't reply: your messages will not be sent.)")
+        elif not can_send:
             parts.append("(You are observing this group: keep recording issues with the tools; your messages will not be sent.)")
         parts.append("Decide what the NEW messages need: log a new issue, update an issue from a staff message, "
                      "record a rating, and/or reply. If nothing is needed, do not call any tool.")

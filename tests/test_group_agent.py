@@ -333,6 +333,45 @@ def test_each_fallback_is_tried_in_turn(monkeypatch):
     assert len(seen) == 4  # every model was still tried
 
 
+def test_catch_up_logs_missed_messages_without_sending(client, sent):
+    from group_agent.llm import LLMError
+
+    async def down(messages, tools):
+        raise LLMError("Olares connection error")
+
+    agent(client).llm.complete = down
+    message = event("M1", "The ceiling panel in my bedroom was left open")
+    message["timestamp"] -= 3600
+    post(client, message)  # no model answered: stored, not handled
+    assert agent(client).store.list_issues() == []
+
+    seen = []
+
+    async def back(messages, tools):
+        seen.append(messages[-1]["content"])
+        if any(m["role"] == "tool" for m in messages):
+            return {"content": None, "tool_calls": []}
+        return {"content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "log_issue", "arguments": json.dumps(
+                {"message_id": "M1", "summary": "Ceiling panel left open", "service_area": "Civil Work"})}},
+            {"id": "c2", "type": "function", "function": {"name": "send_reply", "arguments": json.dumps(
+                {"text": "Logged", "reply_to": "M1"})}}]}
+
+    agent(client).llm.complete = back
+    since = time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() - 7200))
+    response = client.post("/api/v1/group-agent/catch-up", json={"since": since + "+01:00"},
+                           headers={"X-API-Key": API_KEY})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["logged"]) == 1 and body["chats"][0]["messages"] == 1
+    assert "came in while you were unavailable" in seen[0]
+    assert sent == []  # catching up never sends
+    issue = agent(client).store.get_issue(body["logged"][0])
+    assert issue["opened_at"] == message["timestamp"]  # dated when the resident wrote it
+
+    assert client.post("/api/v1/group-agent/catch-up", json={}, headers={"X-API-Key": API_KEY}).status_code == 400
+
+
 def test_messages_from_before_a_restart_are_not_answered(env, sent):
     import main_http
 

@@ -111,6 +111,26 @@ async def _check(service: GroupAgentService, llm) -> dict:
     }
 
 
+@router.post("/api/v1/group-agent/catch-up", dependencies=[Depends(require_api_key_configured)])
+async def catch_up(request: Request, service: GroupAgentService = Depends(get_service)):
+    """Go back over stored messages since a time (e.g. while no model was answering): log their issues
+    and staff updates, without sending anything. Body: {"since": "2026-10-27T09:00"} (Lagos time)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    try:
+        body = await request.json()
+        since = datetime.fromisoformat(body["since"])
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=400, detail='Send {"since": "YYYY-MM-DDTHH:MM"} (Lagos time)')
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=ZoneInfo("Africa/Lagos"))
+    results = await service.agent.catch_up(int(since.timestamp()))
+    return {"since": since.isoformat(), "chats": results,
+            "logged": [ref for r in results for ref in r["logged"]],
+            "note": "Nothing was sent to WhatsApp. Issues logged here are followed up as usual from now on."}
+
+
 @router.get("/api/v1/group-agent/qr", dependencies=[Depends(require_api_key_configured)])
 async def login_qr(service: GroupAgentService = Depends(get_service)):
     png = await service.bridge.qr_png()
